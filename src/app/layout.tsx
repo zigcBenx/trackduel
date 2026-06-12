@@ -1,7 +1,7 @@
 import "~/styles/globals.css";
 
 import { type Metadata, type Viewport } from "next";
-import { Anton, Geist, Geist_Mono } from "next/font/google";
+import { Archivo_Black, Geist_Mono, Press_Start_2P } from "next/font/google";
 
 import { TRPCReactProvider } from "~/trpc/react";
 
@@ -12,23 +12,24 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#07070a",
+  themeColor: "#0e1525",
 };
-
-const geist = Geist({
-  subsets: ["latin"],
-  variable: "--font-geist-sans",
-});
 
 const geistMono = Geist_Mono({
   subsets: ["latin"],
   variable: "--font-geist-mono",
 });
 
-const anton = Anton({
+const archivo = Archivo_Black({
   weight: "400",
   subsets: ["latin"],
-  variable: "--font-anton",
+  variable: "--font-archivo",
+});
+
+const pressStart = Press_Start_2P({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-press",
 });
 
 export default function RootLayout({
@@ -37,7 +38,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geist.variable} ${geistMono.variable} ${anton.variable}`}
+      className={`${geistMono.variable} ${archivo.variable} ${pressStart.variable}`}
     >
       <body>
         <TRPCReactProvider>{children}</TRPCReactProvider>

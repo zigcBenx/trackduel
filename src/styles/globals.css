@@ -1,21 +1,74 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans:
-    var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif,
-    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  --font-display: var(--font-anton), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  --font-display: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-pixel: var(--font-press), ui-monospace, monospace;
 
-  --color-pitch: #07070a;
-  --color-ember: #ff3a24;
-  --color-volt: #2bd9ff;
-  --color-gold: #ffc62e;
+  /* night-meet pixel palette */
+  --color-night: #0e1525;
+  --color-panel: #151e31;
+  --color-line: #2c3854;
+  --color-cream: #ece1c8;
+  --color-dim: #8b94aa;
+  --color-flame: #c8503c;
+  --color-blaze: #b2453a;
+  --color-gold: #e3b341;
+  --color-royal: #4e7cd6;
+  --color-turf: #1f4022;
+  --color-clay: #a14a2b;
 }
 
 /* no blue flash on card taps (mobile webkit) */
 html {
   -webkit-tap-highlight-color: transparent;
+}
+
+/* overscroll areas match the night sky */
+body {
+  background: #0e1525;
+}
+
+/* chunky 4px border drawn with box-shadows so the corners stay square-notched,
+   like an old game dialog box; recolor via the --pb custom property */
+.pixel-border {
+  box-shadow:
+    0 -4px 0 0 var(--pb, #2c3854),
+    0 4px 0 0 var(--pb, #2c3854),
+    -4px 0 0 0 var(--pb, #2c3854),
+    4px 0 0 0 var(--pb, #2c3854);
+}
+
+/* pressed-plastic bevel for buttons, lighter top edge + darker bottom edge */
+.bevel {
+  box-shadow:
+    inset 0 3px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* one dot, the rest of the sky drawn with box-shadows */
+.stars {
+  width: 3px;
+  height: 3px;
+  background: rgba(236, 225, 200, 0.55);
+  box-shadow:
+    8vw 10vh 0 rgba(236, 225, 200, 0.45),
+    16vw 22vh 0 rgba(236, 225, 200, 0.25),
+    24vw 7vh 0 rgba(236, 225, 200, 0.5),
+    31vw 30vh 0 rgba(236, 225, 200, 0.2),
+    38vw 14vh 0 rgba(236, 225, 200, 0.4),
+    47vw 5vh 0 rgba(236, 225, 200, 0.3),
+    55vw 24vh 0 rgba(236, 225, 200, 0.25),
+    63vw 11vh 0 rgba(236, 225, 200, 0.45),
+    70vw 28vh 0 rgba(236, 225, 200, 0.2),
+    78vw 8vh 0 rgba(236, 225, 200, 0.5),
+    86vw 18vh 0 rgba(236, 225, 200, 0.3),
+    93vw 26vh 0 rgba(236, 225, 200, 0.25),
+    12vw 38vh 0 rgba(236, 225, 200, 0.2),
+    42vw 36vh 0 rgba(236, 225, 200, 0.25),
+    67vw 40vh 0 rgba(236, 225, 200, 0.15),
+    90vw 36vh 0 rgba(236, 225, 200, 0.2);
 }
 
 @keyframes rise {
@@ -26,21 +79,6 @@ html {
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes vsPop {
-  0% {
-    opacity: 0;
-    transform: scale(0.5) skewX(-12deg);
-  }
-  60% {
-    opacity: 1;
-    transform: scale(1.12) skewX(-12deg);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) skewX(-12deg);
   }
 }
 
@@ -64,6 +102,18 @@ html {
   }
 }
 
+/* pair with steps() timing so the pop lands on chunky frames */
+@keyframes vsPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 @keyframes shake {
   0%,
   100% {
@@ -83,18 +133,12 @@ html {
   }
 }
 
-/* angled track-lane stripes, used as a full-page texture */
-.bg-lanes {
-  background-image: repeating-linear-gradient(
-    104deg,
-    transparent 0px,
-    transparent 92px,
-    rgba(255, 255, 255, 0.05) 92px,
-    rgba(255, 255, 255, 0.05) 94px
-  );
-}
-
-/* film-grain overlay so flat dark areas don't band */
-.bg-grain {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+@keyframes drift {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(16px);
+  }
 }
