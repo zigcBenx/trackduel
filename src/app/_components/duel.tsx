@@ -1,139 +1,73 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
+
+import { api, type RouterOutputs } from "~/trpc/react";
 
 const SHOT_CLOCK_MS = 7000;
 const REVEAL_HOLD_MS = 2200;
 const EXIT_MS = 320;
+const BATCH_SIZE = 10;
 
-type Athlete = {
-  name: string;
-  country: string;
-  flag: string;
-  born: number;
-  seasons: number;
-  pb: string;
-  bib: number;
-  time: string;
-};
-
-type Duel = {
-  event: string;
-  year: number;
-  stadium: string;
-  wind: string;
-  athletes: [Athlete, Athlete];
-  winner: 0 | 1;
-};
-
-const DUELS: Duel[] = [
-  {
-    event: "Men's 100m · Olympic Final",
-    year: 2012,
-    stadium: "Olympic Stadium, London",
-    wind: "+1.5 m/s",
-    winner: 0,
-    athletes: [
-      {
-        name: "Usain Bolt",
-        country: "JAM",
-        flag: "🇯🇲",
-        born: 1986,
-        seasons: 14,
-        pb: "9.58",
-        bib: 2163,
-        time: "9.63",
-      },
-      {
-        name: "Justin Gatlin",
-        country: "USA",
-        flag: "🇺🇸",
-        born: 1982,
-        seasons: 19,
-        pb: "9.74",
-        bib: 3206,
-        time: "9.79",
-      },
-    ],
-  },
-  {
-    event: "Women's 100m · Olympic Final",
-    year: 2021,
-    stadium: "National Stadium, Tokyo",
-    wind: "-0.6 m/s",
-    winner: 1,
-    athletes: [
-      {
-        name: "Shelly-Ann Fraser-Pryce",
-        country: "JAM",
-        flag: "🇯🇲",
-        born: 1986,
-        seasons: 16,
-        pb: "10.60",
-        bib: 2722,
-        time: "10.74",
-      },
-      {
-        name: "Elaine Thompson-Herah",
-        country: "JAM",
-        flag: "🇯🇲",
-        born: 1992,
-        seasons: 12,
-        pb: "10.54",
-        bib: 2735,
-        time: "10.61",
-      },
-    ],
-  },
-  {
-    event: "Men's 200m · World Championship Final",
-    year: 2022,
-    stadium: "Hayward Field, Eugene",
-    wind: "+0.4 m/s",
-    winner: 1,
-    athletes: [
-      {
-        name: "Erriyon Knighton",
-        country: "USA",
-        flag: "🇺🇸",
-        born: 2004,
-        seasons: 4,
-        pb: "19.49",
-        bib: 1098,
-        time: "19.80",
-      },
-      {
-        name: "Noah Lyles",
-        country: "USA",
-        flag: "🇺🇸",
-        born: 1997,
-        seasons: 9,
-        pb: "19.31",
-        bib: 1112,
-        time: "19.31",
-      },
-    ],
-  },
-];
+type DuelView = RouterOutputs["duel"]["getBatch"][number];
+type PublicAthlete = DuelView["athleteA"];
+type RevealResult = RouterOutputs["duel"]["reveal"];
 
 export function DuelGame() {
   const [round, setRound] = useState(0);
-  const [picked, setPicked] = useState<number | null>(null);
+  const [roundsPlayed, setRoundsPlayed] = useState(0);
+  const [picked, setPicked] = useState<0 | 1 | null>(null);
   const [timedOut, setTimedOut] = useState(false);
+  const [result, setResult] = useState<RevealResult | null>(null);
+  const [revealFailed, setRevealFailed] = useState(false);
   const [exiting, setExiting] = useState(false);
+  const [loadingNext, setLoadingNext] = useState(false);
   const [msLeft, setMsLeft] = useState(SHOT_CLOCK_MS);
   const [streak, setStreak] = useState(0);
   const [best, setBest] = useState(0);
 
-  const duel = DUELS[round % DUELS.length]!;
-  const revealed = picked !== null || timedOut;
-  const correct = picked !== null && picked === duel.winner;
-  const champ = duel.athletes[duel.winner];
+  const batchQuery = api.duel.getBatch.useQuery(
+    { count: BATCH_SIZE },
+    { staleTime: Infinity, refetchOnWindowFocus: false },
+  );
+  const { refetch: refetchBatch } = batchQuery;
 
+  const reveal = api.duel.reveal.useMutation({
+    onSuccess: (res) => {
+      setRevealFailed(false);
+      setResult(res);
+      if (res.correct) {
+        setStreak((s) => {
+          const next = s + 1;
+          setBest((b) => Math.max(b, next));
+          return next;
+        });
+      } else {
+        setStreak(0);
+      }
+    },
+    onError: () => setRevealFailed(true),
+  });
+  const { mutate: revealMutate } = reveal;
+
+  const batch = batchQuery.data;
+  const duel = batch?.[round];
+  const locked = picked !== null || timedOut; // shot clock stops here
+  const revealed = result !== null; // winner/times known (server answered)
+  const correct = result?.correct ?? false;
+  const champ = result
+    ? result.winnerSide === 0
+      ? duel?.athleteA
+      : duel?.athleteB
+    : undefined;
+
+  // shot clock
   useEffect(() => {
-    if (revealed) return;
+    if (!duel || locked) return;
     const end = Date.now() + SHOT_CLOCK_MS;
     setMsLeft(SHOT_CLOCK_MS);
+    const duelId = duel.id;
     const tick = setInterval(() => {
       const left = Math.max(0, end - Date.now());
       setMsLeft(left);
@@ -141,21 +75,22 @@ export function DuelGame() {
         clearInterval(tick);
         setTimedOut(true);
         setStreak(0);
+        revealMutate({ duelId, pick: null });
       }
     }, 50);
     return () => clearInterval(tick);
-  }, [round, revealed]);
+  }, [duel, locked, revealMutate]);
 
-  function pick(side: number) {
-    if (revealed) return;
+  function pick(side: 0 | 1) {
+    if (!duel || locked) return;
     setPicked(side);
-    if (side === duel.winner) {
-      const next = streak + 1;
-      setStreak(next);
-      setBest((b) => Math.max(b, next));
-    } else {
-      setStreak(0);
-    }
+    revealMutate({ duelId: duel.id, pick: side });
+  }
+
+  function retryReveal() {
+    if (!duel) return;
+    setRevealFailed(false);
+    revealMutate({ duelId: duel.id, pick: picked });
   }
 
   // hold the verdict on screen, then animate the stage out and swap rounds
@@ -170,11 +105,22 @@ export function DuelGame() {
     const swap = setTimeout(() => {
       setPicked(null);
       setTimedOut(false);
+      setResult(null);
       setExiting(false);
-      setRound((r) => r + 1);
+      setRoundsPlayed((n) => n + 1);
+      const next = round + 1;
+      if (!batch || next >= batch.length) {
+        setLoadingNext(true);
+        void refetchBatch().then(() => {
+          setRound(0);
+          setLoadingNext(false);
+        });
+      } else {
+        setRound(next);
+      }
     }, EXIT_MS);
     return () => clearTimeout(swap);
-  }, [exiting]);
+  }, [exiting, round, batch, refetchBatch]);
 
   return (
     <div className="bg-night text-cream selection:bg-flame selection:text-night relative flex min-h-dvh flex-col overflow-hidden font-mono">
@@ -208,110 +154,150 @@ export function DuelGame() {
       </header>
 
       <main className="relative z-10 mx-auto w-full max-w-6xl flex-1 px-3 pt-2 pb-8 md:px-4 md:pt-6 md:pb-10">
-        <div className={exiting ? "[animation:fadeOut_.32s_ease_both]" : ""}>
-          {/* race card */}
-          <div
-            key={`meta-${round}`}
-            className="mb-5 [animation:rise_.5s_ease_both] text-center md:mb-8"
-          >
-            <p className="text-dim mb-2 text-[9px] tracking-[0.4em] md:mb-3 md:text-[11px]">
-              ROUND {round + 1} — GUESS WHO WON
-            </p>
-            <h1 className="font-display text-cream text-xl uppercase md:text-5xl">
-              {duel.event}
-            </h1>
-            <div className="divide-line border-line bg-panel/80 mt-4 inline-flex divide-x border backdrop-blur md:mt-5">
-              <MetaCell label="YEAR" value={String(duel.year)} />
-              <MetaCell label="STADIUM" value={duel.stadium} />
-              <MetaCell label="WIND" value={duel.wind} />
-            </div>
-          </div>
-
-          {/* shot clock */}
-          <ShotClock msLeft={msLeft} revealed={revealed} timedOut={timedOut} />
-
-          {/* the duel — side by side even on mobile so both athletes are always comparable */}
-          <div className="relative grid grid-cols-2 items-stretch gap-3 md:grid-cols-[1fr_auto_1fr] md:items-center md:gap-6">
-            <AthleteCard
-              key={`a0-${round}`}
-              athlete={duel.athletes[0]}
-              side={0}
-              revealed={revealed}
-              isWinner={duel.winner === 0}
-              isPicked={picked === 0}
-              onPick={() => pick(0)}
-            />
-            <VsBadge key={`vs-${round}`} />
-            <AthleteCard
-              key={`a1-${round}`}
-              athlete={duel.athletes[1]}
-              side={1}
-              revealed={revealed}
-              isWinner={duel.winner === 1}
-              isPicked={picked === 1}
-              onPick={() => pick(1)}
-            />
-          </div>
-
-          {/* verdict */}
-          <div className="mt-8 flex min-h-24 flex-col items-center gap-4 md:mt-10">
-            {revealed ? (
-              <>
-                <p
-                  className={`font-pixel [animation:rise_.4s_ease_both] px-2 text-center text-sm leading-relaxed md:text-2xl ${
-                    correct ? "text-gold" : "text-flame"
-                  }`}
-                >
-                  {correct
-                    ? "CALLED IT!"
-                    : timedOut
-                      ? "TOO SLOW!"
-                      : "NOT QUITE!"}
-                  <span className="text-dim mt-2 block font-mono text-[10px] tracking-[0.2em] md:text-xs">
-                    {champ.name.split(" ").pop()?.toUpperCase()} TOOK IT IN{" "}
-                    {champ.time}
-                  </span>
+        {batchQuery.isPending || loadingNext ? (
+          <StatusScreen text="LOADING DUELS…" pulse />
+        ) : batchQuery.isError ? (
+          <StatusScreen
+            text="CONNECTION LOST"
+            actionLabel="RETRY ▸"
+            onAction={() => void refetchBatch()}
+          />
+        ) : !duel ? (
+          <StatusScreen
+            text="NO DUELS IN THE VAULT"
+            sub="SEED THE DATABASE: npm run db:seed"
+          />
+        ) : (
+          <>
+            <div
+              className={exiting ? "[animation:fadeOut_.32s_ease_both]" : ""}
+            >
+              {/* race card */}
+              <div
+                key={`meta-${duel.id}`}
+                className="mb-5 [animation:rise_.5s_ease_both] text-center md:mb-8"
+              >
+                <p className="text-dim mb-2 text-[9px] tracking-[0.4em] md:mb-3 md:text-[11px]">
+                  ROUND {roundsPlayed + 1} — GUESS WHO WON
                 </p>
-                <div className="flex [animation:rise_.4s_.1s_ease_both] flex-col items-center gap-1.5">
-                  <span className="text-dim text-[8px] tracking-[0.4em]">
-                    NEXT DUEL
-                  </span>
-                  <div className="border-line bg-night h-2.5 w-40 border">
-                    <div
-                      className={
-                        correct
-                          ? "h-full bg-[repeating-linear-gradient(90deg,#e3b341_0_6px,transparent_6px_9px)]"
-                          : "h-full bg-[repeating-linear-gradient(90deg,#c8503c_0_6px,transparent_6px_9px)]"
-                      }
-                      style={{
-                        animation: `drain ${REVEAL_HOLD_MS}ms linear both`,
-                      }}
-                    />
-                  </div>
+                <h1 className="font-display text-cream text-xl uppercase md:text-5xl">
+                  {duel.event}
+                </h1>
+                <div className="divide-line border-line bg-panel/80 mt-4 inline-flex divide-x border backdrop-blur md:mt-5">
+                  <MetaCell label="YEAR" value={String(duel.year)} />
+                  <MetaCell label="STADIUM" value={duel.stadium} />
+                  <MetaCell label="WIND" value={duel.wind} />
                 </div>
-              </>
-            ) : (
-              <p className="text-dim animate-pulse text-center text-[9px] tracking-[0.35em] md:text-xs">
-                WHO TOOK THE WIN? PICK AN ATHLETE
-              </p>
-            )}
-          </div>
-        </div>
+              </div>
 
-        <div className="mt-4 flex items-center justify-center gap-2">
-          {DUELS.map((_, i) => (
-            <span
-              key={i}
-              className={`h-2 w-2 transition-colors ${
-                i === round % DUELS.length
-                  ? "bg-flame"
-                  : i < round % DUELS.length
-                    ? "bg-gold"
-                    : "bg-line"
-              }`}
-            />
-          ))}
-        </div>
+              {/* shot clock */}
+              <ShotClock
+                msLeft={msLeft}
+                locked={locked}
+                revealed={revealed}
+                timedOut={timedOut}
+              />
+
+              {/* the duel — side by side even on mobile so both athletes are always comparable */}
+              <div className="relative grid grid-cols-2 items-stretch gap-3 md:grid-cols-[1fr_auto_1fr] md:items-center md:gap-6">
+                <AthleteCard
+                  key={`a0-${duel.id}`}
+                  athlete={duel.athleteA}
+                  side={0}
+                  locked={locked}
+                  revealed={revealed}
+                  isWinner={result?.winnerSide === 0}
+                  isPicked={picked === 0}
+                  time={result?.times[0]}
+                  onPick={() => pick(0)}
+                />
+                <VsBadge key={`vs-${duel.id}`} />
+                <AthleteCard
+                  key={`a1-${duel.id}`}
+                  athlete={duel.athleteB}
+                  side={1}
+                  locked={locked}
+                  revealed={revealed}
+                  isWinner={result?.winnerSide === 1}
+                  isPicked={picked === 1}
+                  time={result?.times[1]}
+                  onPick={() => pick(1)}
+                />
+              </div>
+
+              {/* verdict */}
+              <div className="mt-8 flex min-h-24 flex-col items-center gap-4 md:mt-10">
+                {revealFailed ? (
+                  <>
+                    <p className="font-pixel text-flame text-center text-sm md:text-lg">
+                      CONNECTION LOST
+                    </p>
+                    <button
+                      onClick={retryReveal}
+                      className="bevel bg-blaze font-pixel text-cream cursor-pointer px-4 py-2 text-[10px] hover:brightness-110 md:text-xs"
+                    >
+                      RETRY ▸
+                    </button>
+                  </>
+                ) : revealed && result ? (
+                  <>
+                    <p
+                      className={`font-pixel [animation:rise_.4s_ease_both] px-2 text-center text-sm leading-relaxed md:text-2xl ${
+                        correct ? "text-gold" : "text-flame"
+                      }`}
+                    >
+                      {correct
+                        ? "CALLED IT!"
+                        : timedOut
+                          ? "TOO SLOW!"
+                          : "NOT QUITE!"}
+                      <span className="text-dim mt-2 block font-mono text-[10px] tracking-[0.2em] md:text-xs">
+                        {champ?.name.split(" ").pop()?.toUpperCase()} TOOK IT IN{" "}
+                        {result.times[result.winnerSide]}
+                      </span>
+                    </p>
+                    <div className="flex [animation:rise_.4s_.1s_ease_both] flex-col items-center gap-1.5">
+                      <span className="text-dim text-[8px] tracking-[0.4em]">
+                        NEXT DUEL
+                      </span>
+                      <div className="border-line bg-night h-2.5 w-40 border">
+                        <div
+                          className={
+                            correct
+                              ? "h-full bg-[repeating-linear-gradient(90deg,#e3b341_0_6px,transparent_6px_9px)]"
+                              : "h-full bg-[repeating-linear-gradient(90deg,#c8503c_0_6px,transparent_6px_9px)]"
+                          }
+                          style={{
+                            animation: `drain ${REVEAL_HOLD_MS}ms linear both`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : locked ? (
+                  <p className="text-dim animate-pulse text-center text-[9px] tracking-[0.35em] md:text-xs">
+                    PHOTO FINISH…
+                  </p>
+                ) : (
+                  <p className="text-dim animate-pulse text-center text-[9px] tracking-[0.35em] md:text-xs">
+                    WHO TOOK THE WIN? PICK AN ATHLETE
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-center gap-2">
+              {batch?.map((b, i) => (
+                <span
+                  key={b.id}
+                  className={`h-2 w-2 transition-colors ${
+                    i === round ? "bg-flame" : i < round ? "bg-gold" : "bg-line"
+                  }`}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </main>
 
       <footer className="text-cream/60 relative z-10 pb-5 text-center text-[8px] tracking-[0.4em] md:pb-6 md:text-[9px]">
@@ -321,25 +307,66 @@ export function DuelGame() {
   );
 }
 
+function StatusScreen({
+  text,
+  sub,
+  pulse,
+  actionLabel,
+  onAction,
+}: {
+  text: string;
+  sub?: string;
+  pulse?: boolean;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4">
+      <p
+        className={`font-pixel text-cream text-center text-xs md:text-sm ${pulse ? "animate-pulse" : ""}`}
+      >
+        {text}
+      </p>
+      {sub && (
+        <p className="text-dim text-center text-[9px] tracking-[0.3em]">
+          {sub}
+        </p>
+      )}
+      {onAction && (
+        <button
+          onClick={onAction}
+          className="bevel bg-blaze font-pixel text-cream cursor-pointer px-4 py-2 text-[10px] hover:brightness-110 md:text-xs"
+        >
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AthleteCard({
   athlete,
   side,
+  locked,
   revealed,
   isWinner,
   isPicked,
+  time,
   onPick,
 }: {
-  athlete: Athlete;
+  athlete: PublicAthlete;
   side: 0 | 1;
+  locked: boolean;
   revealed: boolean;
   isWinner: boolean;
   isPicked: boolean;
+  time?: string;
   onPick: () => void;
 }) {
   const red = side === 0;
   const lastName = athlete.name.split(" ").pop()?.toUpperCase();
 
-  const hoverCls = revealed
+  const hoverCls = locked
     ? ""
     : "hover:[--pb:#56648a] hover:-translate-y-0.5 active:translate-y-0.5";
 
@@ -352,7 +379,7 @@ function AthleteCard({
   return (
     <button
       onClick={onPick}
-      disabled={revealed}
+      disabled={locked}
       className={`group pixel-border bg-panel relative w-full cursor-pointer touch-manipulation text-left [filter:drop-shadow(4px_4px_0_rgba(0,0,0,0.45))] transition-all duration-150 [--pb:#2c3854] disabled:cursor-default ${hoverCls} ${stateCls} ${
         side === 0
           ? "[animation:rise_.5s_ease_both]"
@@ -373,15 +400,7 @@ function AthleteCard({
           #{athlete.bib}
         </span>
 
-        <Runner
-          flip={!red}
-          color={red ? "#c8503c" : "#4e7cd6"}
-          className={`relative h-16 w-16 transition-transform duration-300 group-hover:scale-110 md:h-28 md:w-28 ${
-            red
-              ? "drop-shadow-[0_0_10px_rgba(200,80,60,0.4)]"
-              : "drop-shadow-[0_0_10px_rgba(78,124,214,0.4)]"
-          }`}
-        />
+        <AthletePortrait athlete={athlete} red={red} />
 
         {revealed && isWinner && (
           <span className="bevel bg-gold font-pixel text-night absolute top-2 left-2 [animation:vsPop_.3s_.15s_steps(3,end)_both] px-1.5 py-1 text-[7px] md:top-3 md:left-3 md:px-2 md:text-[10px]">
@@ -423,9 +442,7 @@ function AthleteCard({
             <span className="text-[8px] tracking-[0.3em]">
               {isWinner ? "WINNER" : "FINISH"}
             </span>
-            <span className="font-pixel text-[9px] md:text-xs">
-              {athlete.time}
-            </span>
+            <span className="font-pixel text-[9px] md:text-xs">{time}</span>
           </div>
         ) : (
           <div
@@ -445,16 +462,18 @@ function AthleteCard({
 
 function ShotClock({
   msLeft,
+  locked,
   revealed,
   timedOut,
 }: {
   msLeft: number;
+  locked: boolean;
   revealed: boolean;
   timedOut: boolean;
 }) {
   const pct = (msLeft / SHOT_CLOCK_MS) * 100;
   const low = msLeft < 3000;
-  const critical = msLeft < 1500 && !revealed;
+  const critical = msLeft < 1500 && !locked;
 
   return (
     <div className="mx-auto mb-5 w-fit md:mb-8">
@@ -464,7 +483,7 @@ function ShotClock({
         </span>
         <span
           className={`font-pixel text-sm tabular-nums transition-colors duration-300 md:text-lg ${
-            timedOut || (low && !revealed)
+            timedOut || (low && !locked)
               ? "text-flame"
               : revealed
                 ? "text-dim"
@@ -498,6 +517,52 @@ function VsBadge() {
           VS
         </span>
       </div>
+    </div>
+  );
+}
+
+/** Real headshot from the World Athletics CDN, rendered small and upscaled
+ * with pixelated sampling so photos read as 8-bit mugshots. Falls back to
+ * the runner sprite when an athlete has no photo. */
+function AthletePortrait({
+  athlete,
+  red,
+}: {
+  athlete: PublicAthlete;
+  red: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  const glow = red
+    ? "drop-shadow-[0_0_10px_rgba(200,80,60,0.4)]"
+    : "drop-shadow-[0_0_10px_rgba(78,124,214,0.4)]";
+
+  if (!athlete.waId || failed) {
+    return (
+      <Runner
+        flip={!red}
+        color={red ? "#c8503c" : "#4e7cd6"}
+        className={`relative h-16 w-16 transition-transform duration-300 group-hover:scale-110 md:h-28 md:w-28 ${glow}`}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`relative h-20 w-20 overflow-hidden border-2 transition-transform duration-300 group-hover:scale-105 md:h-36 md:w-36 ${glow} ${
+        red ? "border-flame/60" : "border-royal/60"
+      }`}
+    >
+      <Image
+        src={`https://media.aws.iaaf.org/athletes/${athlete.waId}.jpg`}
+        alt={athlete.name}
+        width={72}
+        height={72}
+        className="h-full w-full object-cover [image-rendering:pixelated]"
+        onError={() => setFailed(true)}
+      />
+      {/* night tint so photos sit in the palette */}
+      <div className="bg-night/20 pointer-events-none absolute inset-0 mix-blend-multiply" />
     </div>
   );
 }

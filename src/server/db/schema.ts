@@ -1,6 +1,11 @@
 import { relations } from "drizzle-orm";
-import { index, pgTableCreator, primaryKey } from "drizzle-orm/pg-core";
-import { type AdapterAccount } from "next-auth/adapters";
+import {
+  index,
+  pgTableCreator,
+  primaryKey,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+import type { AdapterAccount } from "next-auth/adapters";
 
 /**
  * This is an example of how to use the multi-project schema feature of Drizzle ORM. Use the same
@@ -9,6 +14,45 @@ import { type AdapterAccount } from "next-auth/adapters";
  * @see https://orm.drizzle.team/docs/goodies#multi-project-schema
  */
 export const createTable = pgTableCreator((name) => `trackduel_${name}`);
+
+/** One side of a duel, denormalized at seed time — exactly what the card renders. */
+export type DuelAthlete = {
+  waId: number | null;
+  name: string;
+  country: string;
+  flag: string;
+  born: number;
+  seasons: number;
+  pb: string;
+  bib: number;
+  /** Finish mark in this race, e.g. "9.63" — never sent to the client pre-pick. */
+  time: string;
+};
+
+export const duels = createTable(
+  "duel",
+  (d) => ({
+    id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
+    event: d.varchar({ length: 256 }).notNull(),
+    year: d.integer().notNull(),
+    stadium: d.varchar({ length: 256 }).notNull(),
+    wind: d.varchar({ length: 32 }).notNull(),
+    disciplineCode: d.varchar({ length: 32 }).notNull(),
+    sex: d.varchar({ length: 8 }).notNull(),
+    athleteA: d.jsonb().$type<DuelAthlete>().notNull(),
+    athleteB: d.jsonb().$type<DuelAthlete>().notNull(),
+    winnerSide: d.smallint().notNull(), // 0 = athleteA, 1 = athleteB
+    waCompetitionId: d.integer().notNull(),
+    waRaceId: d.integer().notNull(),
+    /** `${competitionId}:${raceId}:${aId}:${bId}` — dedup key for seed re-runs. */
+    sourceKey: d.varchar({ length: 128 }).notNull(),
+    createdAt: d
+      .timestamp({ withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  }),
+  (t) => [uniqueIndex("duel_source_key_idx").on(t.sourceKey)],
+);
 
 export const posts = createTable(
   "post",

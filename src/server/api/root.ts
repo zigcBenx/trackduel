@@ -1,3 +1,4 @@
+import { duelRouter } from "~/server/api/routers/duel";
 import { postRouter } from "~/server/api/routers/post";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
@@ -8,6 +9,7 @@ import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
  */
 export const appRouter = createTRPCRouter({
   post: postRouter,
+  duel: duelRouter,
 });
 
 // export type definition of API

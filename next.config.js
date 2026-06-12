@@ -5,6 +5,17 @@
 import "./src/env.js";
 
 /** @type {import("next").NextConfig} */
-const config = {};
+const config = {
+  images: {
+    remotePatterns: [
+      {
+        // World Athletics athlete headshots, addressed by athlete id
+        protocol: "https",
+        hostname: "media.aws.iaaf.org",
+        pathname: "/athletes/**",
+      },
+    ],
+  },
+};
 
 export default config;
