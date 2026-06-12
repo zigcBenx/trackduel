@@ -54,6 +54,40 @@ export const duels = createTable(
   (t) => [uniqueIndex("duel_source_key_idx").on(t.sourceKey)],
 );
 
+/** One answered duel by one user. Each duel scores only once per user
+ * (unique index) so reveals can't be farmed for points. */
+export const plays = createTable(
+  "play",
+  (d) => ({
+    id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
+    userId: d
+      .varchar({ length: 255 })
+      .notNull()
+      .references(() => users.id),
+    duelId: d
+      .integer()
+      .notNull()
+      .references(() => duels.id),
+    pick: d.smallint(), // null = timeout
+    correct: d.boolean().notNull(),
+    points: d.integer().notNull(),
+    streakAfter: d.integer().notNull(),
+    createdAt: d
+      .timestamp({ withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  }),
+  (t) => [
+    uniqueIndex("play_user_duel_idx").on(t.userId, t.duelId),
+    index("play_user_created_idx").on(t.userId, t.createdAt),
+  ],
+);
+
+export const playsRelations = relations(plays, ({ one }) => ({
+  user: one(users, { fields: [plays.userId], references: [users.id] }),
+  duel: one(duels, { fields: [plays.duelId], references: [duels.id] }),
+}));
+
 export const posts = createTable(
   "post",
   (d) => ({

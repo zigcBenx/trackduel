@@ -1,5 +1,6 @@
 import { authRouter } from "~/server/api/routers/auth";
 import { duelRouter } from "~/server/api/routers/duel";
+import { leaderboardRouter } from "~/server/api/routers/leaderboard";
 import { postRouter } from "~/server/api/routers/post";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
@@ -12,6 +13,7 @@ export const appRouter = createTRPCRouter({
   post: postRouter,
   duel: duelRouter,
   auth: authRouter,
+  leaderboard: leaderboardRouter,
 });
 
 // export type definition of API

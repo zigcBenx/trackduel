@@ -5,6 +5,7 @@ import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
 
+import { multiplierFor } from "~/lib/scoring";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 const SHOT_CLOCK_MS = 7000;
@@ -30,6 +31,7 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
   const [msLeft, setMsLeft] = useState(SHOT_CLOCK_MS);
   const [streak, setStreak] = useState(0);
   const [best, setBest] = useState(0);
+  const [pts, setPts] = useState(0);
 
   const batchQuery = api.duel.getBatch.useQuery(
     { count: BATCH_SIZE },
@@ -37,11 +39,30 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
   );
   const { refetch: refetchBatch } = batchQuery;
 
+  // persisted stats for logged-in players (streak survives navigation/refresh)
+  const meQuery = api.duel.me.useQuery(undefined, {
+    enabled: !!user,
+    refetchOnWindowFocus: false,
+  });
+  const me = meQuery.data;
+  useEffect(() => {
+    if (!me) return;
+    setPts(me.weeklyPoints);
+    setStreak(me.streak);
+    setBest(me.bestStreak);
+  }, [me]);
+
   const reveal = api.duel.reveal.useMutation({
     onSuccess: (res) => {
       setRevealFailed(false);
       setResult(res);
-      if (res.correct) {
+      setPts((p) => Math.max(0, p + res.points));
+      if (res.streak !== null) {
+        // server-authoritative streak (logged in)
+        const s = res.streak;
+        setStreak(s);
+        setBest((b) => Math.max(b, s));
+      } else if (res.correct) {
         setStreak((s) => {
           const next = s + 1;
           setBest((b) => Math.max(b, next));
@@ -152,8 +173,27 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
           </span>
         </div>
         <div className="flex items-center gap-2 md:gap-3">
-          <ScoreChip label="STREAK" value={streak > 0 ? `🔥${streak}` : "0"} />
-          <ScoreChip label="BEST" value={String(best)} />
+          <ScoreChip label="PTS" value={String(pts)} />
+          <ScoreChip
+            label="STREAK"
+            value={
+              streak > 0
+                ? `🔥${streak}${multiplierFor(streak) > 1 ? ` ×${multiplierFor(streak)}` : ""}`
+                : "0"
+            }
+          />
+          <ScoreChip
+            label="BEST"
+            value={String(best)}
+            className="max-md:hidden"
+          />
+          <Link
+            href="/leaderboard"
+            title="Leaderboard"
+            className="border-line bg-panel hover:border-gold/70 flex items-center self-stretch border px-2.5 transition-colors md:px-3"
+          >
+            <PixelTrophy />
+          </Link>
           {user ? (
             <button
               onClick={() => void signOut()}
@@ -289,7 +329,10 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                         : timedOut
                           ? "TOO SLOW!"
                           : "NOT QUITE!"}
+                      {result.points !== 0 &&
+                        ` ${result.points > 0 ? `+${result.points}` : result.points}`}
                       <span className="text-dim mt-2 block font-mono text-[10px] tracking-[0.2em] md:text-xs">
+                        {result.repeat && "RERUN, NO POINTS — "}
                         {champ?.name.split(" ").pop()?.toUpperCase()} TOOK IT IN{" "}
                         {result.times[result.winnerSide]}
                       </span>
@@ -334,6 +377,17 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                 />
               ))}
             </div>
+
+            {!user && (
+              <p className="mt-4 text-center">
+                <Link
+                  href="/login"
+                  className="text-dim hover:text-cream text-[8px] tracking-[0.3em] transition-colors"
+                >
+                  SIGN IN TO ENTER THE RANKS ▸
+                </Link>
+              </p>
+            )}
           </>
         )}
       </main>
@@ -640,6 +694,25 @@ function PixelCloud({ className }: { className?: string }) {
   );
 }
 
+function PixelTrophy() {
+  return (
+    <svg
+      viewBox="0 0 8 8"
+      className="h-4 w-4 md:h-5 md:w-5"
+      shapeRendering="crispEdges"
+      aria-hidden
+    >
+      <rect x="1" y="0" width="6" height="1" fill="#e3b341" />
+      <rect x="0" y="1" width="1" height="2" fill="#e3b341" />
+      <rect x="7" y="1" width="1" height="2" fill="#e3b341" />
+      <rect x="2" y="1" width="4" height="2" fill="#e3b341" />
+      <rect x="3" y="3" width="2" height="2" fill="#e3b341" />
+      <rect x="2" y="5" width="4" height="1" fill="#e3b341" />
+      <rect x="1" y="6" width="6" height="1" fill="#e3b341" />
+    </svg>
+  );
+}
+
 function PixelFlame() {
   return (
     <svg
@@ -656,9 +729,19 @@ function PixelFlame() {
   );
 }
 
-function ScoreChip({ label, value }: { label: string; value: string }) {
+function ScoreChip({
+  label,
+  value,
+  className,
+}: {
+  label: string;
+  value: string;
+  className?: string;
+}) {
   return (
-    <div className="border-line bg-panel min-w-16 border px-3 py-1.5 text-center md:min-w-20 md:px-4 md:py-2">
+    <div
+      className={`border-line bg-panel min-w-16 border px-3 py-1.5 text-center md:min-w-20 md:px-4 md:py-2 ${className ?? ""}`}
+    >
       <div className="text-dim text-[7px] tracking-[0.3em] md:text-[8px]">
         {label}
       </div>
