@@ -1,6 +1,100 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif,
+  --font-sans:
+    var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif,
     "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-display: var(--font-anton), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --color-pitch: #07070a;
+  --color-ember: #ff3a24;
+  --color-volt: #2bd9ff;
+  --color-gold: #ffc62e;
+}
+
+/* no blue flash on card taps (mobile webkit) */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes vsPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) skewX(-12deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12) skewX(-12deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) skewX(-12deg);
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.98);
+  }
+}
+
+@keyframes drain {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0) scale(0.97);
+  }
+  20% {
+    transform: translateX(-7px) scale(0.97);
+  }
+  40% {
+    transform: translateX(6px) scale(0.97);
+  }
+  60% {
+    transform: translateX(-4px) scale(0.97);
+  }
+  80% {
+    transform: translateX(3px) scale(0.97);
+  }
+}
+
+/* angled track-lane stripes, used as a full-page texture */
+.bg-lanes {
+  background-image: repeating-linear-gradient(
+    104deg,
+    transparent 0px,
+    transparent 92px,
+    rgba(255, 255, 255, 0.05) 92px,
+    rgba(255, 255, 255, 0.05) 94px
+  );
+}
+
+/* film-grain overlay so flat dark areas don't band */
+.bg-grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
 }
