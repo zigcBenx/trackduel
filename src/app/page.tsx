@@ -1,5 +1,19 @@
 import { DuelGame } from "~/app/_components/duel";
+import { auth } from "~/server/auth";
 
-export default function Home() {
-  return <DuelGame />;
+export default async function Home() {
+  const session = await auth();
+
+  return (
+    <DuelGame
+      user={
+        session?.user
+          ? {
+              name: session.user.name ?? "RUNNER",
+              image: session.user.image ?? null,
+            }
+          : null
+      }
+    />
+  );
 }

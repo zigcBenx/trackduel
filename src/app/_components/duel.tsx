@@ -1,6 +1,8 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
+import { signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
 
 import { api, type RouterOutputs } from "~/trpc/react";
@@ -14,7 +16,9 @@ type DuelView = RouterOutputs["duel"]["getBatch"][number];
 type PublicAthlete = DuelView["athleteA"];
 type RevealResult = RouterOutputs["duel"]["reveal"];
 
-export function DuelGame() {
+type SessionUser = { name: string; image: string | null };
+
+export function DuelGame({ user }: { user: SessionUser | null }) {
   const [round, setRound] = useState(0);
   const [roundsPlayed, setRoundsPlayed] = useState(0);
   const [picked, setPicked] = useState<0 | 1 | null>(null);
@@ -150,6 +154,40 @@ export function DuelGame() {
         <div className="flex items-center gap-2 md:gap-3">
           <ScoreChip label="STREAK" value={streak > 0 ? `🔥${streak}` : "0"} />
           <ScoreChip label="BEST" value={String(best)} />
+          {user ? (
+            <button
+              onClick={() => void signOut()}
+              title="Sign out"
+              className="border-line bg-panel group flex cursor-pointer items-center gap-2 self-stretch border px-2.5 md:px-3"
+            >
+              {user.image ? (
+                <Image
+                  src={user.image}
+                  alt={user.name}
+                  width={20}
+                  height={20}
+                  className="h-5 w-5 [image-rendering:pixelated]"
+                />
+              ) : (
+                <span className="font-pixel text-gold text-[10px]">
+                  {user.name.charAt(0).toUpperCase()}
+                </span>
+              )}
+              <span className="text-dim hidden text-[8px] tracking-[0.2em] md:inline">
+                {user.name.split(" ")[0]?.toUpperCase()}
+              </span>
+              <span className="text-dim group-hover:text-flame text-[8px] transition-colors">
+                ✕
+              </span>
+            </button>
+          ) : (
+            <Link
+              href="/login"
+              className="bevel bg-blaze font-pixel text-cream flex items-center self-stretch px-3 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
+            >
+              SIGN IN ▸
+            </Link>
+          )}
         </div>
       </header>
 
@@ -300,8 +338,8 @@ export function DuelGame() {
         )}
       </main>
 
-      <footer className="text-cream/60 relative z-10 pb-5 text-center text-[8px] tracking-[0.4em] md:pb-6 md:text-[9px]">
-        TRACKDUEL — EVERY RACE HAS A WINNER
+      <footer className="text-cream/60 relative z-10 pb-4 text-center text-[8px] tracking-[0.4em] md:pb-6 md:text-[9px]">
+        TRACKDUEL — trackwrapped product
       </footer>
     </div>
   );

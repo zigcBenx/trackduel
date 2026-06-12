@@ -1,6 +1,10 @@
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
+import { compare } from "bcryptjs";
+import { eq } from "drizzle-orm";
 import { type DefaultSession, type NextAuthConfig } from "next-auth";
-import DiscordProvider from "next-auth/providers/discord";
+import CredentialsProvider from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
+import { z } from "zod";
 
 import { db } from "~/server/db";
 import {
@@ -20,34 +24,52 @@ declare module "next-auth" {
   interface Session extends DefaultSession {
     user: {
       id: string;
-      // ...other properties
-      // role: UserRole;
     } & DefaultSession["user"];
   }
-
-  // interface User {
-  //   // ...other properties
-  //   // role: UserRole;
-  // }
 }
+
+const credentialsSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(1),
+});
 
 /**
  * Options for NextAuth.js used to configure adapters, providers, callbacks, etc.
+ *
+ * Sessions use the JWT strategy: the Credentials provider does not support
+ * database sessions. OAuth users/accounts are still persisted via the adapter.
  *
  * @see https://next-auth.js.org/configuration/options
  */
 export const authConfig = {
   providers: [
-    DiscordProvider,
-    /**
-     * ...add more providers here.
-     *
-     * Most other providers require a bit more work than the Discord provider. For example, the
-     * GitHub provider requires you to add the `refresh_token_expires_in` field to the Account
-     * model. Refer to the NextAuth.js docs for the provider you want to use. Example:
-     *
-     * @see https://next-auth.js.org/providers/github
-     */
+    GoogleProvider, // reads AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET from env
+    CredentialsProvider({
+      name: "Email & password",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      authorize: async (credentials) => {
+        const parsed = credentialsSchema.safeParse(credentials);
+        if (!parsed.success) return null;
+
+        const user = await db.query.users.findFirst({
+          where: eq(users.email, parsed.data.email),
+        });
+        if (!user?.passwordHash) return null; // unknown or OAuth-only account
+
+        const valid = await compare(parsed.data.password, user.passwordHash);
+        if (!valid) return null;
+
+        return {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          image: user.image,
+        };
+      },
+    }),
   ],
   adapter: DrizzleAdapter(db, {
     usersTable: users,
@@ -55,12 +77,18 @@ export const authConfig = {
     sessionsTable: sessions,
     verificationTokensTable: verificationTokens,
   }),
+  session: { strategy: "jwt" },
+  pages: { signIn: "/login" },
   callbacks: {
-    session: ({ session, user }) => ({
+    jwt: ({ token, user }) => {
+      if (user?.id) token.id = user.id;
+      return token;
+    },
+    session: ({ session, token }) => ({
       ...session,
       user: {
         ...session.user,
-        id: user.id,
+        id: (token.id as string | undefined) ?? token.sub ?? "",
       },
     }),
   },

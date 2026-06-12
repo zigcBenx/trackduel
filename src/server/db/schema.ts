@@ -83,6 +83,8 @@ export const users = createTable("user", (d) => ({
     .$defaultFn(() => crypto.randomUUID()),
   name: d.varchar({ length: 255 }),
   email: d.varchar({ length: 255 }).notNull(),
+  /** bcrypt hash; null for OAuth-only accounts */
+  passwordHash: d.varchar({ length: 255 }),
   emailVerified: d
     .timestamp({
       mode: "date",

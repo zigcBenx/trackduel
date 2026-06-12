@@ -14,6 +14,11 @@ const config = {
         hostname: "media.aws.iaaf.org",
         pathname: "/athletes/**",
       },
+      {
+        // Google account avatars
+        protocol: "https",
+        hostname: "lh3.googleusercontent.com",
+      },
     ],
   },
 };
