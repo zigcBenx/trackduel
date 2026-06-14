@@ -4,60 +4,130 @@
  * Run with: npm run db:seed
  * Re-runnable: duels are deduplicated via the sourceKey unique index.
  *
- * The proxy is community-hosted, so this script fetches sequentially with a
- * polite delay and caches athlete lookups across duels.
+ * Strategy (to reach ~2000 quality duels without hammering the API):
+ *  - discover meets by searching famous series/championships across years
+ *  - per race, pair the top finishers (1v2, 2v3, …) — many duels per fetch
+ *  - cache each athlete's profile (they recur across rounds & meets)
+ *  - stop once TARGET duels exist
  */
 import { db } from "~/server/db";
 import { duels, type DuelAthlete } from "~/server/db/schema";
 import {
   getAthlete,
   getCompetitionResults,
+  searchCompetitions,
   type Athlete,
   type CompetitionResultsRace,
 } from "~/server/services/world-athletics";
 
-/** Curated meets (ids verified against the live API). label feeds the event headline. */
-const MEETS: { id: number; label: string }[] = [
-  { id: 7153115, label: "Olympic Final" }, // Paris 2024
-  { id: 7199686, label: "Weltklasse Zürich" }, // 2025
-  { id: 7203941, label: "Prefontaine Classic" }, // 2025
-  { id: 7174055, label: "Prefontaine Classic" }, // 2024
-  { id: 7154217, label: "Prefontaine Classic" }, // 2023
-  { id: 7203944, label: "Athletissima Lausanne" }, // 2025
-  { id: 7174061, label: "Athletissima Lausanne" }, // 2024
-  { id: 7203938, label: "Golden Gala" }, // 2025
-  { id: 7174054, label: "Golden Gala" }, // 2024
-  { id: 7199685, label: "Memorial Van Damme" }, // 2025
-  { id: 7174062, label: "Memorial Van Damme" }, // 2024
+const TARGET = 1500; // new duels to add this run (older years)
+const MAX_COMPETITIONS = 200;
+const PER_MEET_CAP = 70; // keep one championship from dominating the pool
+const TOP_N = 6; // pair finishers down to this place
+const API_DELAY_MS = 150;
+
+/** World Athletics ranking categories worth keeping — elite meets only, where
+ * the athletes are actually recognizable: Olympics/Worlds, DL final, Diamond
+ * League, Continental Tour Gold. Covers 2018→present. */
+const ALLOWED_CATEGORIES = new Set(["OW", "DF", "GW", "GL"]);
+
+/** Everything before ~2018 is lumped into the "Pre 2018" category, so it can't
+ * be quality-filtered by category. For those years, keep a meet only if its
+ * name matches a famous series/championship — this pulls in the 2010–2017
+ * golden era (Bolt, Farah, Felix…) without the minor old meets. */
+const PRE_2018_FAMOUS =
+  /(prefontaine|weltklasse|athletissima|van damme|golden gala|bislett|herculis|diamond league|areva|meeting de paris|crystal palace|aviva|london grand prix|anniversary games|dn galan|bauhaus|stockholm|shanghai|doha|qatar|adidas grand prix|world championships in athletics|olympic games|european athletics championships|european championships|birmingham|monaco|gateshead|ostrava golden spike)/i;
+
+function isQualityMeet(c: { rankingCategory: string; name: string }): boolean {
+  if (ALLOWED_CATEGORIES.has(c.rankingCategory)) return true;
+  if (c.rankingCategory === "Pre 2018" && PRE_2018_FAMOUS.test(c.name)) {
+    return true;
+  }
+  return false;
+}
+
+/** Meet/championship names to search — biased to recognizable athletes. */
+const MEET_QUERIES = [
+  "Wanda Diamond League",
+  "Diamond League",
+  "Continental Tour Gold",
+  "World Championships in Athletics",
+  "IAAF World Championships",
+  "London Grand Prix",
+  "DN Galan",
+  "Prefontaine Classic",
+  "Athletissima",
+  "Weltklasse",
+  "Memorial van Damme",
+  "Golden Gala",
+  "Bislett Games",
+  "Meeting de Paris",
+  "Herculis",
+  "London Athletics Meet",
+  "Anniversary Games",
+  "Doha",
+  "Shanghai",
+  "Rabat",
+  "Stockholm",
+  "Silesia",
+  "Suzhou",
+  "Xiamen",
+  "Oslo",
+  "Rome",
+  "Brussels",
+  "Eugene",
+  "Hengelo",
+  "Ostrava",
+  "Lausanne",
+  "Monaco",
+  "World Athletics Championships",
+  "Olympic Games",
+  "European Athletics Championships",
+  "Continental Tour",
+  "USATF",
+  "World Indoor Championships",
+  "European Indoor",
 ];
 
-/** Track disciplines where "who won" + finish times make a snappy duel. */
+/** Track disciplines where "who won" + a finishing mark make a clean duel. */
 const DISCIPLINES = new Set([
   "100",
   "200",
   "400",
   "800",
   "1500",
+  "Mile",
+  "3000",
+  "3000SC",
+  "5000",
+  "10000",
+  "60",
   "100H",
   "110H",
   "400H",
+  "60H",
 ]);
 
-const API_DELAY_MS = 250;
+/** Races we keep — skip heats/prelims so athletes stay relatively elite. */
+function isQualityRace(race: string): boolean {
+  const r = race.toLowerCase();
+  if (r.includes("heat") || r.includes("prelim") || r.includes("round 1")) {
+    return false;
+  }
+  return true;
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 const athleteCache = new Map<number, Athlete | null>();
 
 async function fetchAthleteCached(id: number): Promise<Athlete | null> {
   if (athleteCache.has(id)) return athleteCache.get(id) ?? null;
   await sleep(API_DELAY_MS);
   try {
-    const athlete = await getAthlete(id);
-    athleteCache.set(id, athlete);
-    return athlete;
-  } catch (err) {
-    console.warn(`  ! athlete ${id} fetch failed:`, (err as Error).message);
+    const a = await getAthlete(id);
+    athleteCache.set(id, a);
+    return a;
+  } catch {
     athleteCache.set(id, null);
     return null;
   }
@@ -67,6 +137,7 @@ function shortDiscipline(discipline: string): string {
   return discipline
     .replace(",", "")
     .replace(" Metres Hurdles", "m Hurdles")
+    .replace(" Metres Steeplechase", "m SC")
     .replace(" Metres", "m");
 }
 
@@ -75,13 +146,7 @@ function formatWind(wind: number | null | undefined): string {
   return `${wind > 0 ? "+" : ""}${wind.toFixed(1)} m/s`;
 }
 
-function findFinal(
-  races: CompetitionResultsRace[],
-): CompetitionResultsRace | undefined {
-  return races.find((r) => r.race.trim().toLowerCase() === "final");
-}
-
-function buildDuelAthlete(opts: {
+function buildAthlete(opts: {
   waId: number;
   firstname: string;
   lastname: string;
@@ -94,9 +159,8 @@ function buildDuelAthlete(opts: {
   const pb = opts.athlete.personalbests.find(
     (p) => p.disciplineCode === opts.disciplineCode && p.legal,
   );
-  if (!pb) return null;
   const seasons = opts.athlete.activeSeasons.length;
-  if (seasons === 0) return null;
+  if (!pb || seasons === 0) return null;
   return {
     waId: opts.waId,
     name: `${opts.firstname} ${opts.lastname}`,
@@ -110,150 +174,198 @@ function buildDuelAthlete(opts: {
   };
 }
 
-async function main() {
-  let inserted = 0;
-  let skipped = 0;
+let inserted = 0;
+let skipped = 0;
+let meetInserted = 0; // reset per competition (PER_MEET_CAP)
 
-  for (const meet of MEETS) {
-    console.log(`\n=== ${meet.label} (${meet.id}) ===`);
-    let base;
+/** Discover elite meets across all the search queries, deduped, shuffled so
+ * the year mix is varied (not just the most recent meets). */
+async function discoverCompetitions() {
+  const byId = new Map<number, { id: number; name: string; start: string }>();
+  for (const q of MEET_QUERIES) {
+    await sleep(API_DELAY_MS);
     try {
-      base = await getCompetitionResults(meet.id);
-    } catch (err) {
-      console.warn(`  ! results fetch failed:`, (err as Error).message);
-      continue;
+      const comps = await searchCompetitions(q);
+      for (const c of comps) {
+        if (c.hasResults && isQualityMeet(c) && !byId.has(c.id)) {
+          byId.set(c.id, { id: c.id, name: c.name, start: c.start });
+        }
+      }
+    } catch {
+      // skip a failed search
     }
+  }
+  // shuffle for year variety, but put pre-2018 meets first so an incremental
+  // run fills from the older years (the recent ones are already seeded)
+  const shuffle = <T>(arr: T[]) => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+    }
+    return arr;
+  };
+  const all = [...byId.values()];
+  const old = shuffle(all.filter((c) => Number(c.start.slice(0, 4)) < 2018));
+  const recent = shuffle(
+    all.filter((c) => Number(c.start.slice(0, 4)) >= 2018),
+  );
+  return [...old, ...recent];
+}
 
-    const eventOptions = (base.options?.events ?? []).filter(
-      (e) => DISCIPLINES.has(e.disciplineCode) && !e.combined,
-    );
+/** Generate + insert duels for one already-fetched event's races. */
+async function processEvent(
+  meet: { id: number; name: string },
+  event: {
+    discipline: string;
+    disciplineCode: string;
+    isTechnical: boolean;
+    sex: string;
+    races: CompetitionResultsRace[];
+  },
+) {
+  if (event.isTechnical || !DISCIPLINES.has(event.disciplineCode)) return;
+  const sexLabel = event.sex === "W" ? "Women's" : "Men's";
 
-    for (const option of eventOptions) {
-      await sleep(API_DELAY_MS);
-      let scoped;
-      try {
-        scoped = await getCompetitionResults(meet.id, { eventId: option.id });
-      } catch (err) {
-        console.warn(
-          `  ! event ${option.disciplineCode} ${option.sex} fetch failed:`,
-          (err as Error).message,
-        );
+  for (const race of event.races) {
+    if (!isQualityRace(race.race)) continue;
+    const ranked = race.results
+      .filter((r) => r.athletes.length === 1)
+      .sort((a, b) => a.place - b.place)
+      .slice(0, TOP_N);
+
+    for (let i = 0; i + 1 < ranked.length; i++) {
+      if (inserted >= TARGET || meetInserted >= PER_MEET_CAP) return;
+      const win = ranked[i]!;
+      const lose = ranked[i + 1]!;
+      const wa = win.athletes[0]!;
+      const la = lose.athletes[0]!;
+      if (!wa.id || !la.id || !wa.birthdate || !la.birthdate) continue;
+      if (win.mark === lose.mark) continue; // ambiguous "who won"
+
+      const [winAth, loseAth] = [
+        await fetchAthleteCached(wa.id),
+        await fetchAthleteCached(la.id),
+      ];
+      if (!winAth || !loseAth) {
+        skipped++;
         continue;
       }
 
-      for (const event of scoped.events) {
-        if (event.isTechnical || !DISCIPLINES.has(event.disciplineCode)) {
-          continue;
-        }
-        const final = findFinal(event.races);
-        if (!final) {
-          skipped++;
-          continue;
-        }
+      const winner = buildAthlete({
+        waId: wa.id,
+        firstname: wa.firstname,
+        lastname: wa.lastname,
+        country: win.country,
+        born: new Date(wa.birthdate).getFullYear(),
+        athlete: winAth,
+        disciplineCode: event.disciplineCode,
+        time: win.mark,
+      });
+      const loser = buildAthlete({
+        waId: la.id,
+        firstname: la.firstname,
+        lastname: la.lastname,
+        country: lose.country,
+        born: new Date(la.birthdate).getFullYear(),
+        athlete: loseAth,
+        disciplineCode: event.disciplineCode,
+        time: lose.mark,
+      });
+      if (!winner || !loser) {
+        skipped++;
+        continue;
+      }
 
-        const ranked = final.results
-          .filter((r) => r.athletes.length === 1) // skip relays/teams
-          .sort((a, b) => a.place - b.place);
-        const first = ranked.find((r) => r.place === 1);
-        const second = ranked.find((r) => r.place === 2);
-        if (!first || !second || first.mark === second.mark) {
-          skipped++;
-          continue;
-        }
+      const winnerSide = (wa.id + la.id) % 2 === 0 ? 0 : 1;
+      const [athleteA, athleteB] =
+        winnerSide === 0 ? [winner, loser] : [loser, winner];
+      const year = race.date
+        ? new Date(race.date).getFullYear()
+        : new Date().getFullYear();
+      const stadium = win.location?.stadium ?? win.location?.city ?? "Unknown";
+      const sourceKey = `${meet.id}:${race.raceId}:${Math.min(wa.id, la.id)}:${Math.max(wa.id, la.id)}`;
 
-        const [winRes, loseRes] = [first, second];
-        const winBase = winRes.athletes[0]!;
-        const loseBase = loseRes.athletes[0]!;
-        if (
-          !winBase.id ||
-          !loseBase.id ||
-          !winBase.birthdate ||
-          !loseBase.birthdate
-        ) {
-          skipped++;
-          continue;
-        }
-
-        const [winAthlete, loseAthlete] = [
-          await fetchAthleteCached(winBase.id),
-          await fetchAthleteCached(loseBase.id),
-        ];
-        if (!winAthlete || !loseAthlete) {
-          skipped++;
-          continue;
-        }
-
-        const winner = buildDuelAthlete({
-          waId: winBase.id,
-          firstname: winBase.firstname,
-          lastname: winBase.lastname,
-          country: winRes.country,
-          born: new Date(winBase.birthdate).getFullYear(),
-          athlete: winAthlete,
+      const res = await db
+        .insert(duels)
+        .values({
+          event: `${sexLabel} ${shortDiscipline(event.discipline)} · ${meet.name}`,
+          year,
+          stadium,
+          wind: formatWind(win.wind),
           disciplineCode: event.disciplineCode,
-          time: winRes.mark,
+          sex: event.sex,
+          athleteA,
+          athleteB,
+          winnerSide,
+          waCompetitionId: meet.id,
+          waRaceId: race.raceId,
+          sourceKey,
+        })
+        .onConflictDoNothing()
+        .returning({ id: duels.id });
+
+      if (res.length > 0) {
+        inserted++;
+        meetInserted++;
+      } else skipped++;
+    }
+  }
+}
+
+async function main() {
+  console.log("Discovering competitions…");
+  const comps = await discoverCompetitions();
+  console.log(`Found ${comps.length} competitions with results.\n`);
+
+  let processed = 0;
+  for (const meet of comps) {
+    if (inserted >= TARGET || processed >= MAX_COMPETITIONS) break;
+    processed++;
+    meetInserted = 0;
+    await sleep(API_DELAY_MS);
+
+    let base;
+    try {
+      base = await getCompetitionResults(meet.id);
+    } catch {
+      continue;
+    }
+
+    // events present directly in the base payload
+    for (const ev of base.events) {
+      if (inserted >= TARGET) break;
+      await processEvent(meet, ev);
+    }
+
+    // championships only list events in `options`; fetch the track ones
+    const baseIds = new Set(base.events.map((e) => e.eventId));
+    const extra = (base.options?.events ?? []).filter(
+      (o) =>
+        DISCIPLINES.has(o.disciplineCode) && !o.combined && !baseIds.has(o.id),
+    );
+    for (const opt of extra) {
+      if (inserted >= TARGET) break;
+      await sleep(API_DELAY_MS);
+      try {
+        const scoped = await getCompetitionResults(meet.id, {
+          eventId: opt.id,
         });
-        const loser = buildDuelAthlete({
-          waId: loseBase.id,
-          firstname: loseBase.firstname,
-          lastname: loseBase.lastname,
-          country: loseRes.country,
-          born: new Date(loseBase.birthdate).getFullYear(),
-          athlete: loseAthlete,
-          disciplineCode: event.disciplineCode,
-          time: loseRes.mark,
-        });
-        if (!winner || !loser) {
-          skipped++;
-          continue;
+        for (const ev of scoped.events) {
+          if (inserted >= TARGET) break;
+          await processEvent(meet, ev);
         }
-
-        // randomize sides so the winner isn't always on the left
-        const winnerSide = Math.random() < 0.5 ? 0 : 1;
-        const [athleteA, athleteB] =
-          winnerSide === 0 ? [winner, loser] : [loser, winner];
-
-        const raceYear = final.date
-          ? new Date(final.date).getFullYear()
-          : new Date().getFullYear();
-        const sexLabel = event.sex === "W" ? "Women's" : "Men's";
-        const stadium =
-          winRes.location?.stadium ?? winRes.location?.city ?? "Unknown";
-        const sourceKey = `${meet.id}:${final.raceId}:${Math.min(winBase.id, loseBase.id)}:${Math.max(winBase.id, loseBase.id)}`;
-
-        const result = await db
-          .insert(duels)
-          .values({
-            event: `${sexLabel} ${shortDiscipline(event.discipline)} · ${meet.label}`,
-            year: raceYear,
-            stadium,
-            wind: formatWind(winRes.wind),
-            disciplineCode: event.disciplineCode,
-            sex: event.sex,
-            athleteA,
-            athleteB,
-            winnerSide,
-            waCompetitionId: meet.id,
-            waRaceId: final.raceId,
-            sourceKey,
-          })
-          .onConflictDoNothing()
-          .returning({ id: duels.id });
-
-        if (result.length > 0) {
-          inserted++;
-          console.log(
-            `  + ${sexLabel} ${shortDiscipline(event.discipline)}: ${winner.name} (${winner.time}) vs ${loser.name} (${loser.time})`,
-          );
-        } else {
-          skipped++; // already seeded
-        }
+      } catch {
+        // skip event
       }
     }
+
+    console.log(
+      `[${processed}/${comps.length}] ${meet.name} — ${inserted} duels so far`,
+    );
   }
 
   console.log(
-    `\nDone. Inserted ${inserted} duels, skipped ${skipped} (dupes/missing data).`,
+    `\nDone. Inserted ${inserted} new duels (skipped ${skipped} dupes/missing).`,
   );
   process.exit(0);
 }

@@ -2,10 +2,10 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { signOut } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 
 import { LogoMark } from "~/app/_components/logo-mark";
+import { gameAudio } from "~/lib/audio";
 import { multiplierFor, RUN_LIVES } from "~/lib/scoring";
 import { api, type RouterOutputs } from "~/trpc/react";
 
@@ -41,7 +41,7 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
   } | null>(null);
   const fxSeq = useRef(0);
   const restartGuard = useRef(false); // prevents double PLAY AGAIN
-  const [signingOut, setSigningOut] = useState(false);
+  const [muted, setMuted] = useState(false);
   // run = one game; ends at 0 lives, then a high-score summary
   const [runId, setRunId] = useState<string | null>(null);
   const [lives, setLives] = useState(RUN_LIVES);
@@ -56,6 +56,26 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
   useEffect(() => {
     if (!runId) setRunId(crypto.randomUUID());
   }, [runId]);
+
+  // ambient music: start on the first user gesture (autoplay policy), stop on
+  // unmount. The mute toggle reflects the persisted preference.
+  useEffect(() => {
+    gameAudio.initFromStorage();
+    setMuted(gameAudio.muted);
+    const start = () => gameAudio.startAmbient();
+    window.addEventListener("pointerdown", start, { once: true });
+    window.addEventListener("keydown", start, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", start);
+      window.removeEventListener("keydown", start);
+      gameAudio.stopAmbient();
+    };
+  }, []);
+
+  // crowd roar when a run ends
+  useEffect(() => {
+    if (gameOver) gameAudio.cheer();
+  }, [gameOver]);
 
   const batchQuery = api.duel.getBatch.useQuery(
     { count: BATCH_SIZE, runId: runId ?? undefined },
@@ -277,6 +297,18 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
               className="max-md:hidden"
             />
           )}
+          <button
+            onClick={() => {
+              const next = !muted;
+              gameAudio.setMuted(next);
+              setMuted(next);
+              if (!next) gameAudio.startAmbient(); // unmuting counts as a gesture
+            }}
+            title={muted ? "Unmute" : "Mute"}
+            className="border-line bg-panel press hover:border-gold/70 flex shrink-0 items-center self-stretch border px-2 transition-colors md:px-3"
+          >
+            <PixelSpeaker muted={muted} />
+          </button>
           <Link
             href="/leaderboard"
             title="Leaderboard"
@@ -284,38 +316,6 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
           >
             <PixelTrophy />
           </Link>
-          {user && (
-            <button
-              onClick={() => {
-                if (signingOut) return;
-                setSigningOut(true);
-                void signOut({ callbackUrl: "/" });
-              }}
-              disabled={signingOut}
-              title="Sign out"
-              className="border-line bg-panel group press flex shrink-0 cursor-pointer items-center gap-1.5 self-stretch border px-2 md:px-3"
-            >
-              {user.image ? (
-                <Image
-                  src={user.image}
-                  alt={user.name}
-                  width={20}
-                  height={20}
-                  className="h-5 w-5 [image-rendering:pixelated]"
-                />
-              ) : (
-                <span className="font-pixel text-gold text-[10px]">
-                  {user.name.charAt(0).toUpperCase()}
-                </span>
-              )}
-              <span className="text-dim hidden text-[8px] tracking-[0.2em] md:inline">
-                {user.name.split(" ")[0]?.toUpperCase()}
-              </span>
-              <span className="text-dim group-hover:text-flame text-[8px] transition-colors">
-                ✕
-              </span>
-            </button>
-          )}
         </div>
       </header>
 
@@ -569,7 +569,8 @@ function GameOver({
 }) {
   return (
     <div className="bg-night/85 absolute inset-0 z-40 flex [animation:rise_.3s_ease_both] items-center justify-center px-4 backdrop-blur-sm">
-      <div className="pixel-border bg-panel w-full max-w-sm p-6 text-center [filter:drop-shadow(5px_6px_0_rgba(0,0,0,0.5))] [--pb:#2c3854] md:p-8">
+      {newHigh && <PixelFireworks />}
+      <div className="pixel-border bg-panel relative z-10 w-full max-w-sm p-6 text-center [filter:drop-shadow(5px_6px_0_rgba(0,0,0,0.5))] [--pb:#2c3854] md:p-8">
         <p className="text-dim text-[9px] tracking-[0.4em]">GAME OVER</p>
 
         {newHigh ? (
@@ -647,6 +648,44 @@ function GameOver({
           </Link>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Pixel fireworks that frame the game-over panel on a new personal record.
+ * Bursts loop with staggered delays; the panel sits above (z-10) so they
+ * frame it rather than cover the text. */
+function PixelFireworks() {
+  const bursts = [
+    { x: "14%", y: "16%", color: "#e3b341", delay: 0 },
+    { x: "84%", y: "13%", color: "#c8503c", delay: 0.45 },
+    { x: "50%", y: "8%", color: "#ece1c8", delay: 0.9 },
+    { x: "22%", y: "84%", color: "#4e7cd6", delay: 1.3 },
+    { x: "80%", y: "82%", color: "#e3b341", delay: 1.7 },
+  ];
+  const PARTICLES = 12;
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+      {bursts.map((b, bi) => (
+        <div key={bi} className="absolute" style={{ left: b.x, top: b.y }}>
+          {Array.from({ length: PARTICLES }).map((_, i) => {
+            const angle = (Math.PI * 2 * i) / PARTICLES;
+            const radius = 24 + (i % 3) * 7;
+            return (
+              <span
+                key={i}
+                className="absolute h-1 w-1 md:h-1.5 md:w-1.5"
+                style={{
+                  backgroundColor: b.color,
+                  ["--dx" as string]: `${Math.round(Math.cos(angle) * radius)}px`,
+                  ["--dy" as string]: `${Math.round(Math.sin(angle) * radius)}px`,
+                  animation: `fireworkParticle 2s ${b.delay}s ease-out infinite`,
+                }}
+              />
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -989,6 +1028,44 @@ function PixelTrophy() {
       <rect x="3" y="3" width="2" height="2" fill="#e3b341" />
       <rect x="2" y="5" width="4" height="1" fill="#e3b341" />
       <rect x="1" y="6" width="6" height="1" fill="#e3b341" />
+    </svg>
+  );
+}
+
+function PixelSpeaker({ muted }: { muted: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 8 8"
+      className="h-4 w-4 md:h-5 md:w-5"
+      shapeRendering="crispEdges"
+      aria-hidden
+    >
+      {/* speaker body */}
+      <g fill={muted ? "#8b94aa" : "#ece1c8"}>
+        <rect x="0" y="3" width="2" height="2" />
+        <rect x="2" y="2" width="1" height="4" />
+        <rect x="3" y="1" width="1" height="6" />
+      </g>
+      {muted ? (
+        // mute cross
+        <g fill="#c8503c">
+          <rect x="5" y="2" width="1" height="1" />
+          <rect x="6" y="3" width="1" height="1" />
+          <rect x="7" y="4" width="1" height="1" />
+          <rect x="6" y="5" width="1" height="1" />
+          <rect x="5" y="6" width="1" height="1" />
+          <rect x="7" y="2" width="1" height="1" />
+          <rect x="5" y="4" width="1" height="1" />
+          <rect x="7" y="6" width="1" height="1" />
+        </g>
+      ) : (
+        // sound waves
+        <g fill="#e3b341">
+          <rect x="5" y="3" width="1" height="2" />
+          <rect x="6" y="2" width="1" height="4" />
+          <rect x="7" y="1" width="1" height="6" />
+        </g>
+      )}
     </svg>
   );
 }

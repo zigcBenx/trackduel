@@ -232,3 +232,23 @@ body {
     opacity: 0;
   }
 }
+
+/* a single firework particle bursting outward (direction via --dx/--dy),
+   then a quiet gap before the loop repeats */
+@keyframes fireworkParticle {
+  0% {
+    transform: translate(0, 0) scale(1.2);
+    opacity: 1;
+  }
+  45% {
+    opacity: 1;
+  }
+  60% {
+    transform: translate(var(--dx), var(--dy)) scale(0.5);
+    opacity: 0;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.5);
+    opacity: 0;
+  }
+}
