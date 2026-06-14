@@ -166,12 +166,12 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
       </div>
 
       <header className="relative z-10 flex items-center justify-between px-4 py-4 md:px-10 md:py-6">
-        <div className="flex items-center gap-2 md:gap-3">
+        <Link href="/" className="flex items-center gap-2 md:gap-3">
           <PixelFlame />
           <span className="font-pixel text-cream text-[11px] md:text-sm">
             TRACK<span className="text-flame">DUEL</span>
           </span>
-        </div>
+        </Link>
         <div className="flex items-center gap-2 md:gap-3">
           <ScoreChip label="PTS" value={String(pts)} />
           <ScoreChip

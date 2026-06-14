@@ -40,10 +40,10 @@ export default async function LeaderboardPage() {
           TRACK<span className="text-flame">DUEL</span>
         </Link>
         <Link
-          href="/"
+          href="/play"
           className="bevel bg-blaze font-pixel text-cream flex items-center px-3 py-2 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
         >
-          ◂ BACK TO THE TRACK
+          ▶ PLAY
         </Link>
       </header>
 
