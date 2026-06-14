@@ -1,6 +1,8 @@
 import Image from "next/image";
 import Link from "next/link";
 
+import { LogoMark } from "~/app/_components/logo-mark";
+import { RunClaimer } from "~/app/_components/run-claimer";
 import { SignOutButton } from "~/app/_components/sign-out-button";
 import { auth } from "~/server/auth";
 
@@ -10,6 +12,8 @@ export default async function Home() {
 
   return (
     <div className="bg-night text-cream selection:bg-flame selection:text-night relative flex min-h-dvh flex-col overflow-hidden font-mono">
+      <RunClaimer enabled={!!user} />
+
       {/* night sky */}
       <div className="stars pointer-events-none absolute top-0 left-0" />
       <PixelCloud className="top-24 left-[8%] [animation:drift_22s_ease-in-out_infinite]" />
@@ -29,7 +33,7 @@ export default async function Home() {
       {/* top bar: brand + auth */}
       <header className="relative z-10 flex items-center justify-between px-4 py-4 md:px-10 md:py-6">
         <div className="flex items-center gap-2 md:gap-3">
-          <PixelFlame />
+          <LogoMark className="h-4 w-6 md:h-5 md:w-7" />
           <span className="font-pixel text-cream text-[11px] md:text-sm">
             TRACK<span className="text-flame">DUEL</span>
           </span>
@@ -57,7 +61,7 @@ export default async function Home() {
         ) : (
           <Link
             href="/login"
-            className="bevel bg-blaze font-pixel text-cream flex items-center px-3 py-2 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
+            className="bevel press bg-blaze font-pixel text-cream flex items-center px-3 py-2 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
           >
             SIGN IN ▸
           </Link>
@@ -95,13 +99,13 @@ export default async function Home() {
         <div className="mt-9 flex w-full max-w-xs [animation:rise_.5s_.2s_ease_both] flex-col gap-3">
           <Link
             href="/play"
-            className="bevel bg-blaze font-pixel text-cream w-full px-6 py-4 text-sm transition-[filter] hover:brightness-110 md:text-base"
+            className="bevel press bg-blaze font-pixel text-cream w-full px-6 py-4 text-sm transition-[filter] hover:brightness-110 md:text-base"
           >
             ▶ PLAY
           </Link>
           <Link
             href="/leaderboard"
-            className="border-line bg-panel font-pixel text-cream hover:border-gold/70 flex w-full items-center justify-center gap-2 border px-6 py-3.5 text-[11px] transition-colors md:text-xs"
+            className="border-line bg-panel press font-pixel text-cream hover:border-gold/70 flex w-full items-center justify-center gap-2 border px-6 py-3.5 text-[11px] transition-colors md:text-xs"
           >
             <PixelTrophy /> LEADERBOARD
           </Link>
@@ -123,7 +127,7 @@ export default async function Home() {
       </main>
 
       <footer className="text-cream/60 relative z-10 pb-5 text-center text-[8px] tracking-[0.4em] md:pb-6 md:text-[9px]">
-        TRACKDUEL — EVERY RACE HAS A WINNER
+        TRACKDUEL — by trackwrapped.com
       </footer>
     </div>
   );
@@ -194,22 +198,6 @@ function PixelCloud({ className }: { className?: string }) {
       <div className="h-3 w-10 translate-x-3 bg-[#1a2438]" />
       <div className="h-3 w-16 bg-[#1a2438]" />
     </div>
-  );
-}
-
-function PixelFlame() {
-  return (
-    <svg
-      viewBox="0 0 8 8"
-      className="h-4 w-4 md:h-5 md:w-5"
-      shapeRendering="crispEdges"
-      aria-hidden
-    >
-      <rect x="3" y="0" width="2" height="2" fill="#e3b341" />
-      <rect x="2" y="2" width="4" height="2" fill="#c8503c" />
-      <rect x="1" y="4" width="6" height="3" fill="#c8503c" />
-      <rect x="3" y="4" width="2" height="2" fill="#e3b341" />
-    </svg>
   );
 }
 

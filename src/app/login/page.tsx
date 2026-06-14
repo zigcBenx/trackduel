@@ -2,11 +2,17 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { AuthPanel } from "~/app/_components/auth-panel";
+import { LogoMark } from "~/app/_components/logo-mark";
 import { auth } from "~/server/auth";
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ new?: string }>;
+}) {
   const session = await auth();
   if (session?.user) redirect("/");
+  const startRegister = (await searchParams).new !== undefined;
 
   return (
     <div className="bg-night text-cream selection:bg-flame selection:text-night relative flex min-h-dvh flex-col overflow-hidden font-mono">
@@ -23,14 +29,20 @@ export default async function LoginPage() {
         </div>
       </div>
 
-      <header className="relative z-10 flex items-center justify-center px-4 py-6 md:py-8">
-        <Link href="/" className="font-pixel text-cream text-sm md:text-base">
-          TRACK<span className="text-flame">DUEL</span>
+      <header className="relative z-10 flex flex-col items-center gap-3 px-4 py-6 md:py-8">
+        <Link
+          href="/"
+          className="font-pixel text-cream flex flex-col items-center gap-3 text-sm md:text-base"
+        >
+          <span>
+            TRACK<span className="text-flame">DUEL</span>
+          </span>
+          <LogoMark className="h-7 w-11 md:h-8 md:w-12" />
         </Link>
       </header>
 
       <main className="relative z-10 mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-4 pb-24">
-        <AuthPanel />
+        <AuthPanel startRegister={startRegister} />
         <Link
           href="/"
           className="text-dim hover:text-cream mt-6 text-center text-[9px] tracking-[0.3em] transition-colors"

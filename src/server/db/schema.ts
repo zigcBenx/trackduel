@@ -54,20 +54,21 @@ export const duels = createTable(
   (t) => [uniqueIndex("duel_source_key_idx").on(t.sourceKey)],
 );
 
-/** One answered duel by one user. Each duel scores only once per user
- * (unique index) so reveals can't be farmed for points. */
+/** One answered duel within one run (game). `runId` is a client-generated id
+ * that groups a run; a duel scores only once per run (unique index), and a
+ * run's score = sum(points) over its plays. High score = a user's best run. */
 export const plays = createTable(
   "play",
   (d) => ({
     id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
-    userId: d
-      .varchar({ length: 255 })
-      .notNull()
-      .references(() => users.id),
+    // null while a run is played anonymously; set to the user's id when the
+    // run is claimed after sign-up
+    userId: d.varchar({ length: 255 }).references(() => users.id),
     duelId: d
       .integer()
       .notNull()
       .references(() => duels.id),
+    runId: d.varchar({ length: 64 }),
     pick: d.smallint(), // null = timeout
     correct: d.boolean().notNull(),
     points: d.integer().notNull(),
@@ -78,8 +79,8 @@ export const plays = createTable(
       .notNull(),
   }),
   (t) => [
-    uniqueIndex("play_user_duel_idx").on(t.userId, t.duelId),
-    index("play_user_created_idx").on(t.userId, t.createdAt),
+    uniqueIndex("play_run_duel_idx").on(t.runId, t.duelId),
+    index("play_user_run_idx").on(t.userId, t.runId),
   ],
 );
 

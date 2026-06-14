@@ -1,14 +1,13 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
+import { multiplierFor, pointsFor, RUN_LIVES, titleFor } from "~/lib/scoring";
 import {
-  multiplierFor,
-  pointsFor,
-  titleFor,
-  weekStartUtc,
-} from "~/lib/scoring";
-import { createTRPCRouter, publicProcedure } from "~/server/api/trpc";
+  createTRPCRouter,
+  protectedProcedure,
+  publicProcedure,
+} from "~/server/api/trpc";
 import { duels, plays, type DuelAthlete } from "~/server/db/schema";
 
 /** Client-safe athlete view: the finish time would give away the winner. */
@@ -20,42 +19,40 @@ function publicAthlete(athlete: DuelAthlete): Omit<DuelAthlete, "time"> {
 
 export const duelRouter = createTRPCRouter({
   /** A random set of duels — without winnerSide and without finish times.
-   * Logged-in users are dealt duels they haven't played yet (falling back to
-   * repeats once the pool is exhausted; repeats never score). */
+   * Within a run, duels already seen this run are excluded (no repeats);
+   * duels recycle freely across runs. */
   getBatch: publicProcedure
     .input(
       z
-        .object({ count: z.number().int().min(1).max(20).default(10) })
+        .object({
+          count: z.number().int().min(1).max(20).default(10),
+          runId: z.string().max(64).optional(),
+        })
         .optional(),
     )
     .query(async ({ ctx, input }) => {
       const count = input?.count ?? 10;
       const userId = ctx.session?.user?.id;
+      const runId = input?.runId;
+
+      const seenInRun =
+        userId && runId
+          ? ctx.db
+              .select({ id: plays.duelId })
+              .from(plays)
+              .where(and(eq(plays.userId, userId), eq(plays.runId, runId)))
+          : null;
 
       // ORDER BY random() is fine at MVP pool sizes (hundreds of rows)
-      let rows = userId
-        ? await ctx.db
-            .select()
-            .from(duels)
-            .where(
-              notInArray(
-                duels.id,
-                ctx.db
-                  .select({ id: plays.duelId })
-                  .from(plays)
-                  .where(eq(plays.userId, userId)),
-              ),
-            )
-            .orderBy(sql`random()`)
-            .limit(count)
-        : await ctx.db
-            .select()
-            .from(duels)
-            .orderBy(sql`random()`)
-            .limit(count);
+      let rows = await ctx.db
+        .select()
+        .from(duels)
+        .where(seenInRun ? notInArray(duels.id, seenInRun) : undefined)
+        .orderBy(sql`random()`)
+        .limit(count);
 
       if (rows.length === 0) {
-        // pool exhausted — deal repeats (they won't score)
+        // run has exhausted the pool — recycle
         rows = await ctx.db
           .select()
           .from(duels)
@@ -75,13 +72,15 @@ export const duelRouter = createTRPCRouter({
     }),
 
   /** Resolve a duel after the user picked (or timed out: pick = null).
-   * Scoring is computed and recorded server-side; each duel scores only once
-   * per user (unique play per user+duel). */
+   * For logged-in players with a runId, scoring/streak/lives are computed and
+   * enforced server-side within that run. Anonymous players get stateless base
+   * scoring (nothing persisted). */
   reveal: publicProcedure
     .input(
       z.object({
         duelId: z.number().int().positive(),
         pick: z.union([z.literal(0), z.literal(1)]).nullable(),
+        runId: z.string().max(64).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -93,49 +92,68 @@ export const duelRouter = createTRPCRouter({
       }
 
       const correct = input.pick !== null && input.pick === duel.winnerSide;
-      const userId = ctx.session?.user?.id;
+      const userId = ctx.session?.user?.id ?? null;
+      const runId = input.runId;
 
       let points = 0;
-      let streak: number | null = null; // null = anonymous (client keeps its own)
+      let streak: number | null = null;
       let multiplier = 1;
       let repeat = false;
+      let lives: number | null = null;
+      let runOver = false;
 
-      if (userId) {
-        const last = await ctx.db.query.plays.findFirst({
-          where: eq(plays.userId, userId),
-          orderBy: desc(plays.id),
-          columns: { streakAfter: true },
-        });
-        const streakBefore = last?.streakAfter ?? 0;
-        multiplier = multiplierFor(streakBefore);
-        const earned = pointsFor(input.pick, correct, streakBefore);
-        const streakAfter = correct ? streakBefore + 1 : 0;
+      if (runId) {
+        // run state is keyed by runId alone (a client-unique uuid), so it works
+        // the same whether the player is anonymous (userId null) or logged in.
+        // Anonymous runs are recorded too, so they can be claimed after sign-up.
+        const runPlays = await ctx.db
+          .select({ correct: plays.correct, streakAfter: plays.streakAfter })
+          .from(plays)
+          .where(eq(plays.runId, runId))
+          .orderBy(desc(plays.id));
 
-        const inserted = await ctx.db
-          .insert(plays)
-          .values({
-            userId,
-            duelId: duel.id,
-            pick: input.pick,
-            correct,
-            points: earned,
-            streakAfter,
-          })
-          .onConflictDoNothing()
-          .returning({ id: plays.id });
+        const misses = runPlays.filter((p) => !p.correct).length;
+        const streakBefore = runPlays[0]?.streakAfter ?? 0;
 
-        if (inserted.length > 0) {
-          points = earned;
-          streak = streakAfter;
-        } else {
-          // already played this duel — show the answer, score nothing
-          repeat = true;
-          points = 0;
+        if (misses >= RUN_LIVES) {
+          // run already over — reveal the answer but score nothing
+          runOver = true;
+          lives = 0;
           streak = streakBefore;
-          multiplier = 1;
+        } else {
+          multiplier = multiplierFor(streakBefore);
+          const earned = pointsFor(input.pick, correct, streakBefore);
+          const streakAfter = correct ? streakBefore + 1 : 0;
+
+          const inserted = await ctx.db
+            .insert(plays)
+            .values({
+              userId,
+              duelId: duel.id,
+              runId,
+              pick: input.pick,
+              correct,
+              points: earned,
+              streakAfter,
+            })
+            .onConflictDoNothing()
+            .returning({ id: plays.id });
+
+          if (inserted.length > 0) {
+            points = earned;
+            streak = streakAfter;
+            lives = RUN_LIVES - (misses + (correct ? 0 : 1));
+            runOver = lives <= 0;
+          } else {
+            // already answered this duel in this run — no double scoring
+            repeat = true;
+            streak = streakBefore;
+            multiplier = 1;
+            lives = RUN_LIVES - misses;
+          }
         }
       } else {
-        // anonymous: stateless base scoring, no combo, nothing persisted
+        // no run context — stateless base scoring, nothing persisted
         points = pointsFor(input.pick, correct, 0);
       }
 
@@ -147,43 +165,41 @@ export const duelRouter = createTRPCRouter({
         streak,
         multiplier,
         repeat,
+        lives,
+        runOver,
       };
     }),
 
-  /** Current player's persisted stats (null when anonymous). */
+  /** Current player's all-time high score (best single run); null when anon. */
   me: publicProcedure.query(async ({ ctx }) => {
     const userId = ctx.session?.user?.id;
     if (!userId) return null;
 
-    const last = await ctx.db.query.plays.findFirst({
-      where: eq(plays.userId, userId),
-      orderBy: desc(plays.id),
-      columns: { streakAfter: true },
-    });
-
-    const [allTime] = await ctx.db
+    const runScores = await ctx.db
       .select({
-        bestStreak: sql<number>`coalesce(max(${plays.streakAfter}), 0)::int`,
-        totalPoints: sql<number>`greatest(coalesce(sum(${plays.points}), 0), 0)::int`,
+        score: sql<number>`greatest(coalesce(sum(${plays.points}), 0), 0)::int`,
+        best: sql<number>`coalesce(max(${plays.streakAfter}), 0)::int`,
       })
       .from(plays)
-      .where(eq(plays.userId, userId));
+      .where(and(eq(plays.userId, userId), sql`${plays.runId} is not null`))
+      .groupBy(plays.runId);
 
-    const [weekly] = await ctx.db
-      .select({
-        weeklyPoints: sql<number>`greatest(coalesce(sum(${plays.points}), 0), 0)::int`,
-      })
-      .from(plays)
-      .where(
-        and(eq(plays.userId, userId), gte(plays.createdAt, weekStartUtc())),
-      );
+    const highScore = runScores.reduce((m, r) => Math.max(m, r.score), 0);
+    const bestStreak = runScores.reduce((m, r) => Math.max(m, r.best), 0);
 
-    return {
-      streak: last?.streakAfter ?? 0,
-      bestStreak: allTime?.bestStreak ?? 0,
-      totalPoints: allTime?.totalPoints ?? 0,
-      weeklyPoints: weekly?.weeklyPoints ?? 0,
-      title: titleFor(allTime?.totalPoints ?? 0),
-    };
+    return { highScore, bestStreak, title: titleFor(highScore) };
   }),
+
+  /** Attach an anonymous run (played before sign-up) to the now-logged-in user.
+   * Only claims plays that are still ownerless, so it can't steal a run. */
+  claimRun: protectedProcedure
+    .input(z.object({ runId: z.string().max(64) }))
+    .mutation(async ({ ctx, input }) => {
+      const claimed = await ctx.db
+        .update(plays)
+        .set({ userId: ctx.session.user.id })
+        .where(and(eq(plays.runId, input.runId), isNull(plays.userId)))
+        .returning({ id: plays.id });
+      return { claimed: claimed.length };
+    }),
 });

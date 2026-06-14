@@ -41,7 +41,7 @@ export default async function LeaderboardPage() {
         </Link>
         <Link
           href="/play"
-          className="bevel bg-blaze font-pixel text-cream flex items-center px-3 py-2 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
+          className="bevel press bg-blaze font-pixel text-cream flex items-center px-3 py-2 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
         >
           ▶ PLAY
         </Link>
@@ -50,10 +50,10 @@ export default async function LeaderboardPage() {
       <main className="relative z-10 mx-auto w-full max-w-2xl flex-1 px-3 pb-32 md:px-4">
         <div className="mb-6 [animation:rise_.5s_ease_both] text-center md:mb-8">
           <p className="text-dim mb-2 text-[9px] tracking-[0.4em] md:text-[11px]">
-            WEEKLY STANDINGS — RESETS MONDAY
+            ALL-TIME · BEST SINGLE GAME
           </p>
           <h1 className="font-display text-cream text-3xl uppercase md:text-5xl">
-            The Ranks
+            High Scores
           </h1>
         </div>
 
@@ -107,7 +107,7 @@ export default async function LeaderboardPage() {
                       )}
                     </p>
                     <p className="text-dim text-[8px] tracking-[0.25em]">
-                      {e.title} · {e.playCount} DUELS · {e.accuracy}% ACC
+                      {e.title} · {e.runs} GAMES · {e.accuracy}% ACC
                     </p>
                   </div>
 
@@ -115,7 +115,7 @@ export default async function LeaderboardPage() {
                     <p
                       className={`font-pixel text-gold ${medal ? "text-sm md:text-lg" : "text-xs md:text-sm"}`}
                     >
-                      {e.weeklyPoints}
+                      {e.highScore}
                       <span className="text-dim ml-1 text-[8px]">PTS</span>
                     </p>
                     <p className="text-dim mt-0.5 text-[8px] tracking-[0.2em]">
@@ -135,7 +135,7 @@ export default async function LeaderboardPage() {
               YOUR RANK: #{me.rank}
             </span>
             <span className="font-pixel text-cream text-[10px]">
-              {me.weeklyPoints}
+              {me.highScore}
               <span className="text-dim ml-1 text-[8px]">PTS</span>
             </span>
           </div>
@@ -154,7 +154,7 @@ export default async function LeaderboardPage() {
       </main>
 
       <footer className="text-cream/60 relative z-10 pb-5 text-center text-[8px] tracking-[0.4em] md:pb-6 md:text-[9px]">
-        TRACKDUEL — EVERY RACE HAS A WINNER
+        TRACKDUEL — by trackwrapped.com
       </footer>
     </div>
   );

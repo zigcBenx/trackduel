@@ -3,9 +3,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { multiplierFor } from "~/lib/scoring";
+import { LogoMark } from "~/app/_components/logo-mark";
+import { multiplierFor, RUN_LIVES } from "~/lib/scoring";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 const SHOT_CLOCK_MS = 7000;
@@ -30,47 +31,75 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
   const [loadingNext, setLoadingNext] = useState(false);
   const [msLeft, setMsLeft] = useState(SHOT_CLOCK_MS);
   const [streak, setStreak] = useState(0);
-  const [best, setBest] = useState(0);
-  const [pts, setPts] = useState(0);
+  const [hiScore, setHiScore] = useState(0);
+  // transient reveal effects; `seq` re-keys elements so animations replay
+  const [fx, setFx] = useState<{
+    seq: number;
+    points: number;
+    correct: boolean;
+    comboTier: number | null; // multiplier just unlocked (1.5/2/3), else null
+  } | null>(null);
+  const fxSeq = useRef(0);
+  const restartGuard = useRef(false); // prevents double PLAY AGAIN
+  const [signingOut, setSigningOut] = useState(false);
+  // run = one game; ends at 0 lives, then a high-score summary
+  const [runId, setRunId] = useState<string | null>(null);
+  const [lives, setLives] = useState(RUN_LIVES);
+  const [gameOver, setGameOver] = useState(false);
+  const [run, setRun] = useState({ duels: 0, points: 0, bestStreak: 0 });
+  const [endData, setEndData] = useState<{ score: number; newHigh: boolean }>({
+    score: 0,
+    newHigh: false,
+  });
+
+  // run id is generated client-side so it can't cause an SSR hydration mismatch
+  useEffect(() => {
+    if (!runId) setRunId(crypto.randomUUID());
+  }, [runId]);
 
   const batchQuery = api.duel.getBatch.useQuery(
-    { count: BATCH_SIZE },
-    { staleTime: Infinity, refetchOnWindowFocus: false },
+    { count: BATCH_SIZE, runId: runId ?? undefined },
+    { staleTime: Infinity, refetchOnWindowFocus: false, enabled: !!runId },
   );
   const { refetch: refetchBatch } = batchQuery;
 
-  // persisted stats for logged-in players (streak survives navigation/refresh)
+  // all-time high score for the HI display (logged-in only)
   const meQuery = api.duel.me.useQuery(undefined, {
     enabled: !!user,
     refetchOnWindowFocus: false,
   });
+  const { refetch: refetchMe } = meQuery;
   const me = meQuery.data;
   useEffect(() => {
-    if (!me) return;
-    setPts(me.weeklyPoints);
-    setStreak(me.streak);
-    setBest(me.bestStreak);
+    if (me) setHiScore(me.highScore);
   }, [me]);
 
   const reveal = api.duel.reveal.useMutation({
     onSuccess: (res) => {
       setRevealFailed(false);
       setResult(res);
-      setPts((p) => Math.max(0, p + res.points));
-      if (res.streak !== null) {
-        // server-authoritative streak (logged in)
-        const s = res.streak;
-        setStreak(s);
-        setBest((b) => Math.max(b, s));
-      } else if (res.correct) {
-        setStreak((s) => {
-          const next = s + 1;
-          setBest((b) => Math.max(b, next));
-          return next;
-        });
-      } else {
-        setStreak(0);
-      }
+
+      const nextStreak = res.streak ?? (res.correct ? streak + 1 : 0);
+      const tierBefore = multiplierFor(streak);
+      const tierAfter = multiplierFor(nextStreak);
+      setStreak(nextStreak);
+
+      setRun((r) => ({
+        duels: r.duels + 1,
+        points: r.points + res.points,
+        bestStreak: Math.max(r.bestStreak, nextStreak),
+      }));
+      // server is authoritative on lives when logged in; else decrement locally
+      if (res.lives !== null) setLives(res.lives);
+      else if (!res.correct) setLives((l) => Math.max(0, l - 1));
+
+      fxSeq.current += 1;
+      setFx({
+        seq: fxSeq.current,
+        points: res.points,
+        correct: res.correct,
+        comboTier: tierAfter > tierBefore ? tierAfter : null,
+      });
     },
     onError: () => setRevealFailed(true),
   });
@@ -99,23 +128,22 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
       if (left === 0) {
         clearInterval(tick);
         setTimedOut(true);
-        setStreak(0);
-        revealMutate({ duelId, pick: null });
+        revealMutate({ duelId, pick: null, runId: runId ?? undefined });
       }
     }, 50);
     return () => clearInterval(tick);
-  }, [duel, locked, revealMutate]);
+  }, [duel, locked, revealMutate, runId]);
 
   function pick(side: 0 | 1) {
     if (!duel || locked) return;
     setPicked(side);
-    revealMutate({ duelId: duel.id, pick: side });
+    revealMutate({ duelId: duel.id, pick: side, runId: runId ?? undefined });
   }
 
   function retryReveal() {
     if (!duel) return;
     setRevealFailed(false);
-    revealMutate({ duelId: duel.id, pick: picked });
+    revealMutate({ duelId: duel.id, pick: picked, runId: runId ?? undefined });
   }
 
   // hold the verdict on screen, then animate the stage out and swap rounds
@@ -128,9 +156,21 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
   useEffect(() => {
     if (!exiting) return;
     const swap = setTimeout(() => {
+      // out of lives → end the run on the high-score summary
+      if (lives <= 0) {
+        const score = Math.max(0, run.points);
+        setEndData({ score, newHigh: score > hiScore && score > 0 });
+        setHiScore((h) => Math.max(h, score));
+        setExiting(false);
+        restartGuard.current = false; // arm PLAY AGAIN for this game-over
+        setGameOver(true);
+        if (user) void refetchMe();
+        return;
+      }
       setPicked(null);
       setTimedOut(false);
       setResult(null);
+      setFx(null);
       setExiting(false);
       setRoundsPlayed((n) => n + 1);
       const next = round + 1;
@@ -145,7 +185,34 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
       }
     }, EXIT_MS);
     return () => clearTimeout(swap);
-  }, [exiting, round, batch, refetchBatch]);
+  }, [
+    exiting,
+    lives,
+    run,
+    hiScore,
+    user,
+    round,
+    batch,
+    refetchBatch,
+    refetchMe,
+  ]);
+
+  function startNewRun() {
+    if (restartGuard.current) return; // swallow double-clicks
+    restartGuard.current = true;
+    setGameOver(false);
+    setLives(RUN_LIVES);
+    setRun({ duels: 0, points: 0, bestStreak: 0 });
+    setStreak(0);
+    setPicked(null);
+    setTimedOut(false);
+    setResult(null);
+    setFx(null);
+    setExiting(false);
+    setRoundsPlayed(0);
+    setRound(0);
+    setRunId(crypto.randomUUID()); // new run id → getBatch refetches a fresh pool
+  }
 
   return (
     <div className="bg-night text-cream selection:bg-flame selection:text-night relative flex min-h-dvh flex-col overflow-hidden font-mono">
@@ -165,40 +232,68 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
         </div>
       </div>
 
-      <header className="relative z-10 flex items-center justify-between px-4 py-4 md:px-10 md:py-6">
+      {/* full-bleed tint flash on a correct guess (brighter on a combo) */}
+      {fx?.correct && (
+        <div
+          key={`flash-${fx.seq}`}
+          className={`pointer-events-none absolute inset-0 z-30 [animation:screenFlash_.5s_ease-out_both] ${
+            fx.comboTier ? "bg-gold/25" : "bg-gold/10"
+          }`}
+        />
+      )}
+
+      <header className="relative z-10 flex flex-col items-center gap-3 px-3 py-3 md:gap-4 md:py-5">
+        {/* brand on top */}
         <Link href="/" className="flex items-center gap-2 md:gap-3">
-          <PixelFlame />
-          <span className="font-pixel text-cream text-[11px] md:text-sm">
+          <LogoMark />
+          <span className="font-pixel text-cream text-sm md:text-lg">
             TRACK<span className="text-flame">DUEL</span>
           </span>
         </Link>
-        <div className="flex items-center gap-2 md:gap-3">
-          <ScoreChip label="PTS" value={String(pts)} />
+
+        {/* HUD */}
+        <div className="flex items-center justify-center gap-1.5 md:gap-3">
+          <Lives lives={lives} />
+          <ScoreChip
+            label="SCORE"
+            value={String(Math.max(0, run.points))}
+            punch
+          />
           <ScoreChip
             label="STREAK"
+            punch
+            accent={multiplierFor(streak) > 1 ? "text-gold" : undefined}
             value={
               streak > 0
                 ? `🔥${streak}${multiplierFor(streak) > 1 ? ` ×${multiplierFor(streak)}` : ""}`
                 : "0"
             }
           />
-          <ScoreChip
-            label="BEST"
-            value={String(best)}
-            className="max-md:hidden"
-          />
+          {user && (
+            <ScoreChip
+              label="HI"
+              value={String(hiScore)}
+              accent="text-gold"
+              className="max-md:hidden"
+            />
+          )}
           <Link
             href="/leaderboard"
             title="Leaderboard"
-            className="border-line bg-panel hover:border-gold/70 flex items-center self-stretch border px-2.5 transition-colors md:px-3"
+            className="border-line bg-panel press hover:border-gold/70 flex shrink-0 items-center self-stretch border px-2 transition-colors md:px-3"
           >
             <PixelTrophy />
           </Link>
-          {user ? (
+          {user && (
             <button
-              onClick={() => void signOut()}
+              onClick={() => {
+                if (signingOut) return;
+                setSigningOut(true);
+                void signOut({ callbackUrl: "/" });
+              }}
+              disabled={signingOut}
               title="Sign out"
-              className="border-line bg-panel group flex cursor-pointer items-center gap-2 self-stretch border px-2.5 md:px-3"
+              className="border-line bg-panel group press flex shrink-0 cursor-pointer items-center gap-1.5 self-stretch border px-2 md:px-3"
             >
               {user.image ? (
                 <Image
@@ -220,13 +315,6 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                 ✕
               </span>
             </button>
-          ) : (
-            <Link
-              href="/login"
-              className="bevel bg-blaze font-pixel text-cream flex items-center self-stretch px-3 text-[9px] transition-[filter] hover:brightness-110 md:px-4 md:text-[10px]"
-            >
-              SIGN IN ▸
-            </Link>
           )}
         </div>
       </header>
@@ -301,6 +389,32 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                   time={result?.times[1]}
                   onPick={() => pick(1)}
                 />
+
+                {/* floating score that leaps off the result */}
+                {fx && (fx.points !== 0 || !fx.correct) && (
+                  <span
+                    key={`score-${fx.seq}`}
+                    className={`font-pixel pointer-events-none absolute top-[34%] left-1/2 z-20 [animation:floatScore_1.2s_ease-out_both] text-2xl [text-shadow:2px_2px_0_#2b1d16] md:text-4xl ${
+                      fx.correct ? "text-gold" : "text-flame"
+                    }`}
+                  >
+                    {fx.points > 0
+                      ? `+${fx.points}`
+                      : fx.points < 0
+                        ? fx.points
+                        : "MISS"}
+                  </span>
+                )}
+
+                {/* combo banner when a multiplier tier unlocks */}
+                {fx?.comboTier && (
+                  <span
+                    key={`combo-${fx.seq}`}
+                    className="font-pixel text-gold pointer-events-none absolute top-0 left-1/2 z-20 [animation:comboPop_1.5s_ease-out_both] text-sm whitespace-nowrap [text-shadow:2px_2px_0_#c8503c] md:text-xl"
+                  >
+                    🔥 ×{fx.comboTier} COMBO!
+                  </span>
+                )}
               </div>
 
               {/* verdict */}
@@ -312,9 +426,10 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                     </p>
                     <button
                       onClick={retryReveal}
-                      className="bevel bg-blaze font-pixel text-cream cursor-pointer px-4 py-2 text-[10px] hover:brightness-110 md:text-xs"
+                      disabled={reveal.isPending}
+                      className="bevel press bg-blaze font-pixel text-cream cursor-pointer px-4 py-2 text-[10px] hover:brightness-110 md:text-xs"
                     >
-                      RETRY ▸
+                      {reveal.isPending ? "…" : "RETRY ▸"}
                     </button>
                   </>
                 ) : revealed && result ? (
@@ -338,8 +453,10 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                       </span>
                     </p>
                     <div className="flex [animation:rise_.4s_.1s_ease_both] flex-col items-center gap-1.5">
-                      <span className="text-dim text-[8px] tracking-[0.4em]">
-                        NEXT DUEL
+                      <span
+                        className={`text-[8px] tracking-[0.4em] ${lives <= 0 ? "text-flame" : "text-dim"}`}
+                      >
+                        {lives <= 0 ? "RUN OVER" : "NEXT DUEL"}
                       </span>
                       <div className="border-line bg-night h-2.5 w-40 border">
                         <div
@@ -377,24 +494,182 @@ export function DuelGame({ user }: { user: SessionUser | null }) {
                 />
               ))}
             </div>
-
-            {!user && (
-              <p className="mt-4 text-center">
-                <Link
-                  href="/login"
-                  className="text-dim hover:text-cream text-[8px] tracking-[0.3em] transition-colors"
-                >
-                  SIGN IN TO ENTER THE RANKS ▸
-                </Link>
-              </p>
-            )}
           </>
         )}
       </main>
 
+      {gameOver && (
+        <GameOver
+          score={endData.score}
+          hiScore={hiScore}
+          newHigh={endData.newHigh}
+          run={run}
+          loggedIn={!!user}
+          runId={runId}
+          onPlayAgain={startNewRun}
+        />
+      )}
+
       <footer className="text-cream/60 relative z-10 pb-4 text-center text-[8px] tracking-[0.4em] md:pb-6 md:text-[9px]">
         TRACKDUEL — trackwrapped product
       </footer>
+    </div>
+  );
+}
+
+function Lives({ lives }: { lives: number }) {
+  return (
+    <div
+      className="border-line bg-panel flex shrink-0 items-center gap-0.5 self-stretch border px-2 md:gap-1 md:px-3"
+      title={`${lives} lives left`}
+    >
+      {Array.from({ length: RUN_LIVES }).map((_, i) => (
+        <PixelHeart key={i} full={i < lives} />
+      ))}
+    </div>
+  );
+}
+
+function PixelHeart({ full }: { full: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 8 7"
+      className={`h-3 w-3 md:h-3.5 md:w-3.5 ${full ? "" : "opacity-30"}`}
+      shapeRendering="crispEdges"
+      aria-hidden
+    >
+      <g fill={full ? "#c8503c" : "#2c3854"}>
+        <rect x="1" y="1" width="2" height="1" />
+        <rect x="5" y="1" width="2" height="1" />
+        <rect x="0" y="2" width="8" height="2" />
+        <rect x="1" y="4" width="6" height="1" />
+        <rect x="2" y="5" width="4" height="1" />
+        <rect x="3" y="6" width="2" height="1" />
+      </g>
+    </svg>
+  );
+}
+
+function GameOver({
+  score,
+  hiScore,
+  newHigh,
+  run,
+  loggedIn,
+  runId,
+  onPlayAgain,
+}: {
+  score: number;
+  hiScore: number;
+  newHigh: boolean;
+  run: { duels: number; points: number; bestStreak: number };
+  loggedIn: boolean;
+  runId: string | null;
+  onPlayAgain: () => void;
+}) {
+  return (
+    <div className="bg-night/85 absolute inset-0 z-40 flex [animation:rise_.3s_ease_both] items-center justify-center px-4 backdrop-blur-sm">
+      <div className="pixel-border bg-panel w-full max-w-sm p-6 text-center [filter:drop-shadow(5px_6px_0_rgba(0,0,0,0.5))] [--pb:#2c3854] md:p-8">
+        <p className="text-dim text-[9px] tracking-[0.4em]">GAME OVER</p>
+
+        {newHigh ? (
+          <h2 className="font-display text-gold mt-2 [animation:vsPop_.4s_.1s_steps(4,end)_both] text-3xl uppercase md:text-4xl">
+            New High Score!
+          </h2>
+        ) : (
+          <h2 className="font-display text-cream mt-2 text-3xl uppercase md:text-4xl">
+            Final Score
+          </h2>
+        )}
+
+        <p
+          className={`font-pixel mt-4 text-5xl md:text-6xl ${newHigh ? "text-gold" : "text-cream"}`}
+        >
+          {score}
+        </p>
+        {loggedIn && (
+          <p className="text-dim mt-2 text-[9px] tracking-[0.3em]">
+            HIGH SCORE {hiScore}
+          </p>
+        )}
+
+        <dl className="divide-line border-line mt-6 grid grid-cols-2 divide-x border">
+          <RunStat label="DUELS" value={String(run.duels)} />
+          <RunStat
+            label="BEST STREAK"
+            value={`🔥${run.bestStreak}`}
+            accent="text-gold"
+          />
+        </dl>
+
+        {/* loss-aversion sign-up for anonymous players */}
+        {!loggedIn && score > 0 && (
+          <div className="border-flame/60 bg-flame/10 mt-6 [animation:rise_.4s_.15s_ease_both] border border-dashed p-4">
+            <p className="font-pixel text-flame text-[10px] leading-relaxed">
+              DON&apos;T LOSE YOUR {score}!
+            </p>
+            <p className="text-dim mt-2 text-[9px] leading-relaxed tracking-[0.15em]">
+              This score vanishes when you leave. Create a free account to lock
+              it in and enter the rankings.
+            </p>
+            <Link
+              href="/login?new=1"
+              onClick={() => {
+                // remembered across the auth redirect; claimed once signed in
+                if (runId) localStorage.setItem("td_claim_run", runId);
+              }}
+              className="bevel press bg-gold font-pixel text-night mt-3 flex w-full items-center justify-center px-4 py-3 text-[10px] transition-[filter] hover:brightness-105"
+            >
+              ★ SAVE MY SCORE
+            </Link>
+          </div>
+        )}
+
+        <button
+          onClick={onPlayAgain}
+          className="bevel press bg-blaze font-pixel text-cream mt-4 w-full px-6 py-4 text-sm transition-[filter] hover:brightness-110 md:text-base"
+        >
+          ▶ PLAY AGAIN
+        </button>
+
+        <div className="mt-4 flex items-center justify-center gap-5">
+          <Link
+            href="/leaderboard"
+            className="text-dim hover:text-cream text-[9px] tracking-[0.25em] transition-colors"
+          >
+            🏆 LEADERBOARD
+          </Link>
+          <Link
+            href="/"
+            className="text-dim hover:text-cream text-[9px] tracking-[0.25em] transition-colors"
+          >
+            ◂ MENU
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunStat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: string;
+}) {
+  return (
+    <div className="bg-night px-2 py-3">
+      <div className="text-dim text-[7px] tracking-[0.25em] md:text-[8px]">
+        {label}
+      </div>
+      <div
+        className={`font-pixel mt-1.5 text-xs md:text-sm ${accent ?? "text-cream"}`}
+      >
+        {value}
+      </div>
     </div>
   );
 }
@@ -427,7 +702,7 @@ function StatusScreen({
       {onAction && (
         <button
           onClick={onAction}
-          className="bevel bg-blaze font-pixel text-cream cursor-pointer px-4 py-2 text-[10px] hover:brightness-110 md:text-xs"
+          className="bevel press bg-blaze font-pixel text-cream cursor-pointer px-4 py-2 text-[10px] hover:brightness-110 md:text-xs"
         >
           {actionLabel}
         </button>
@@ -478,6 +753,11 @@ function AthleteCard({
           : "[animation:rise_.5s_.08s_ease_both]"
       }`}
     >
+      {/* winner blowout flash */}
+      {revealed && isWinner && (
+        <div className="bg-cream pointer-events-none absolute inset-0 z-20 [animation:flashWin_.45s_ease-out_both]" />
+      )}
+
       {/* portrait: tiny night scene */}
       <div className="bg-night relative flex aspect-square items-center justify-center overflow-hidden md:aspect-[5/4]">
         <span className="bg-cream/40 absolute top-4 left-5 h-1 w-1" />
@@ -713,39 +993,34 @@ function PixelTrophy() {
   );
 }
 
-function PixelFlame() {
-  return (
-    <svg
-      viewBox="0 0 8 8"
-      className="h-4 w-4 md:h-5 md:w-5"
-      shapeRendering="crispEdges"
-      aria-hidden
-    >
-      <rect x="3" y="0" width="2" height="2" fill="#e3b341" />
-      <rect x="2" y="2" width="4" height="2" fill="#c8503c" />
-      <rect x="1" y="4" width="6" height="3" fill="#c8503c" />
-      <rect x="3" y="4" width="2" height="2" fill="#e3b341" />
-    </svg>
-  );
-}
-
 function ScoreChip({
   label,
   value,
   className,
+  punch,
+  accent,
 }: {
   label: string;
   value: string;
   className?: string;
+  /** replay a snap animation whenever `value` changes */
+  punch?: boolean;
+  accent?: string;
 }) {
   return (
     <div
-      className={`border-line bg-panel min-w-16 border px-3 py-1.5 text-center md:min-w-20 md:px-4 md:py-2 ${className ?? ""}`}
+      className={`border-line bg-panel min-w-0 shrink-0 border px-2 py-1 text-center md:min-w-20 md:px-4 md:py-2 ${className ?? ""}`}
     >
-      <div className="text-dim text-[7px] tracking-[0.3em] md:text-[8px]">
+      <div className="text-dim text-[7px] tracking-[0.2em] md:text-[8px] md:tracking-[0.3em]">
         {label}
       </div>
-      <div className="font-pixel text-cream mt-1 text-[10px] md:text-xs">
+      <div
+        // re-key on value change so the punch animation replays
+        key={punch ? value : undefined}
+        className={`font-pixel mt-1 text-[10px] md:text-xs ${accent ?? "text-cream"} ${
+          punch ? "[animation:punch_.3s_ease-out]" : ""
+        }`}
+      >
         {value}
       </div>
     </div>

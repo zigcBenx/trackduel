@@ -10,6 +10,8 @@
  */
 export const BASE_WIN = 10;
 export const WRONG_PENALTY = -2;
+/** Mistakes (wrong pick or timeout) allowed before a run ends. */
+export const RUN_LIVES = 3;
 
 export function multiplierFor(streak: number): number {
   if (streak >= 20) return 3;
@@ -27,21 +29,11 @@ export function pointsFor(
   return pick === null ? 0 : WRONG_PENALTY;
 }
 
-/** Rank title from all-time points — pure swagger, shown on the leaderboard. */
-export function titleFor(totalPoints: number): string {
-  if (totalPoints >= 2500) return "LEGEND";
-  if (totalPoints >= 1000) return "MEDALIST";
-  if (totalPoints >= 400) return "FINALIST";
-  if (totalPoints >= 100) return "SPRINTER";
+/** Rank title from a player's high score (best single run) — pure swagger. */
+export function titleFor(highScore: number): string {
+  if (highScore >= 500) return "LEGEND";
+  if (highScore >= 250) return "MEDALIST";
+  if (highScore >= 120) return "FINALIST";
+  if (highScore >= 50) return "SPRINTER";
   return "ROOKIE";
-}
-
-/** Start of the current scoring week (Monday 00:00 UTC). */
-export function weekStartUtc(now: Date = new Date()): Date {
-  const d = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-  const sinceMonday = (d.getUTCDay() + 6) % 7;
-  d.setUTCDate(d.getUTCDate() - sinceMonday);
-  return d;
 }

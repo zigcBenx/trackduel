@@ -8,9 +8,13 @@ import { api } from "~/trpc/react";
 
 type Mode = "signin" | "register";
 
-export function AuthPanel() {
+export function AuthPanel({
+  startRegister = false,
+}: {
+  startRegister?: boolean;
+}) {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>("signin");
+  const [mode, setMode] = useState<Mode>(startRegister ? "register" : "signin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -69,8 +73,12 @@ export function AuthPanel() {
 
       {/* Google */}
       <button
-        onClick={() => void signIn("google", { callbackUrl: "/" })}
-        className="bevel font-pixel text-night flex w-full cursor-pointer items-center justify-center gap-2 bg-[#ece1c8] px-4 py-3 text-[10px] transition-[filter] hover:brightness-95"
+        onClick={() => {
+          setBusy(true);
+          void signIn("google", { callbackUrl: "/" });
+        }}
+        disabled={busy}
+        className="bevel press font-pixel text-night flex w-full cursor-pointer items-center justify-center gap-2 bg-[#ece1c8] px-4 py-3 text-[10px] transition-[filter] hover:brightness-95"
       >
         <GoogleMark />
         CONTINUE WITH GOOGLE
@@ -123,7 +131,7 @@ export function AuthPanel() {
         <button
           type="submit"
           disabled={busy}
-          className="bevel bg-blaze font-pixel text-cream mt-1 w-full cursor-pointer px-4 py-3 text-[10px] transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-60"
+          className="bevel press bg-blaze font-pixel text-cream mt-1 w-full cursor-pointer px-4 py-3 text-[10px] transition-[filter] hover:brightness-110"
         >
           {busy ? "…" : mode === "signin" ? "SIGN IN ▸" : "CREATE ACCOUNT ▸"}
         </button>
@@ -134,7 +142,8 @@ export function AuthPanel() {
           setMode(mode === "signin" ? "register" : "signin");
           setError(null);
         }}
-        className="text-dim hover:text-cream mt-5 w-full cursor-pointer text-center text-[9px] tracking-[0.25em] transition-colors"
+        disabled={busy}
+        className="text-dim hover:text-cream mt-5 w-full cursor-pointer text-center text-[9px] tracking-[0.25em] transition-colors disabled:opacity-50"
       >
         {mode === "signin"
           ? "NO ACCOUNT? REGISTER ▸"

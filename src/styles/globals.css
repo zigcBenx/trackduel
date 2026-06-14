@@ -47,6 +47,23 @@ body {
     inset 0 -3px 0 rgba(0, 0, 0, 0.35);
 }
 
+/* tactile press feedback for any clickable control — nudges down + dims on
+   press, and visibly flattens while disabled so it reads as "working". */
+.press {
+  transition:
+    transform 0.1s ease,
+    filter 0.1s ease,
+    opacity 0.1s ease;
+}
+.press:not(:disabled):active {
+  transform: translateY(2px);
+  filter: brightness(0.9);
+}
+.press:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 /* one dot, the rest of the sky drawn with box-shadows */
 .stars {
   width: 3px;
@@ -140,5 +157,78 @@ body {
   }
   50% {
     transform: translateX(16px);
+  }
+}
+
+/* --- reveal juice --- */
+
+/* a score chip / value snapping when it changes */
+@keyframes punch {
+  0% {
+    transform: scale(1.5);
+  }
+  55% {
+    transform: scale(0.9);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* the big "+15" that leaps off the winning card and floats away */
+@keyframes floatScore {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.5);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.25);
+  }
+  34% {
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -56px) scale(1);
+  }
+}
+
+/* white blowout over the winning card the instant it's revealed */
+@keyframes flashWin {
+  0% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* combo banner when the streak crosses a multiplier tier */
+@keyframes comboPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.4);
+  }
+  35% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.15);
+  }
+  60% {
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -22px) scale(1);
+  }
+}
+
+/* a quick full-bleed tint flash on a big moment */
+@keyframes screenFlash {
+  0% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
   }
 }
